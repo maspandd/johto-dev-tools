@@ -106,7 +106,7 @@ crates/
   mock-runtime        Axum/Tokio listeners, lifecycle, history; `workbench-mock` CLI
   workbench-storage   SQLite / PostgreSQL repositories and migrations
   workbench-api       (Phase 4) management API
-  data-generator      (Phase 3) seeded synthetic data
+  data-generator      Seeded synthetic data (en/id locales), JSON and CSV export
   openapi-engine      (Phase 5) OpenAPI 3.x import/export
   project-archive     (Phase 5) portable project archives
 apps/
@@ -142,8 +142,8 @@ WORKBENCH_TEST_POSTGRES_URL=postgres://postgres:workbench@127.0.0.1:5432/postgre
 | 0 | Repository, workspace, CI | Done |
 | 1 | Mock engine and runtime | Done |
 | 2 | Storage and persistence (SQLite, PostgreSQL) | Done |
-| 3 | Data generator and CRUD simulation | Next |
-| 4 | Management API, environments, history API | Planned |
+| 3 | Data generator and CRUD simulation | Done |
+| 4 | Management API, environments, history API | Next |
 | 5 | OpenAPI, cURL import, project archives | Planned |
 | 6 | Web UI (API Studio) | Planned |
 | 7 | Desktop app and Docker self-hosting | Planned |
