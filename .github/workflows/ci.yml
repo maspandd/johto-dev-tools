@@ -36,6 +36,32 @@ jobs:
       - name: Test
         run: cargo test --workspace
 
+  postgres:
+    name: Storage (PostgreSQL)
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:17-alpine
+        env:
+          POSTGRES_USER: workbench
+          POSTGRES_PASSWORD: workbench
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U workbench"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+    env:
+      # Throwaway CI service; not a real credential.
+      WORKBENCH_TEST_POSTGRES_URL: postgres://workbench:workbench@127.0.0.1:5432/postgres
+    steps:
+      - uses: actions/checkout@v7
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: Test storage against PostgreSQL
+        run: cargo test -p workbench-storage
+
   web:
     name: Web
     runs-on: ubuntu-latest
