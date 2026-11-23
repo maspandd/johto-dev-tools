@@ -8,8 +8,9 @@ mock HTTP server with validation, response rules, dynamic templates and
 request history.
 
 > **Status: early development.** The Rust mock engine and runtime work today
-> from the command line. The management API, persistence, visual editor and
-> desktop app are on the [roadmap](#roadmap). The product spec is in
+> from the command line, and the storage layer persists projects to SQLite or
+> PostgreSQL. The management API, visual editor and desktop app are on the
+> [roadmap](#roadmap). The product spec is in
 > [docs/developer_workbench_product_spec.md](docs/developer_workbench_product_spec.md).
 
 ## Quick start
@@ -78,16 +79,33 @@ Errors use one JSON envelope everywhere:
 
 See [examples/demo-project.json](examples/demo-project.json) for a full project.
 
+## Storage
+
+`workbench-storage` persists workspaces, projects, environments, endpoints and
+request logs behind one `Store` API:
+
+| Backend | Used by | Connect with |
+|---|---|---|
+| SQLite | Desktop app, local use | `Store::open_sqlite(path)` or `sqlite://file.db` |
+| PostgreSQL | Cloud and self-hosted | `postgres://user:pass@host/db` |
+
+Both backends run the same SQL. Schemas live in [migrations/sqlite](migrations/sqlite)
+and [migrations/postgres](migrations/postgres) and are applied on connect.
+Queried fields are columns; flexible configuration (endpoint request, responses,
+rules, headers, variables) is JSON (`JSONB` on PostgreSQL). Projects can be
+archived, restored and duplicated; a duplicate copies environments and endpoints
+under new IDs in one transaction.
+
 ## Repository layout
 
 ```text
 crates/
-  workbench-core      IDs, error codes and envelope, safe bind settings
-  workbench-domain    Endpoint, PathTemplate, MockResponse, rules, validation
+  workbench-core      IDs, error codes and envelope, safe bind settings, timestamps
+  workbench-domain    Workspace, Project, Environment, Endpoint, rules, request logs
   mock-engine         Pure request pipeline: route → auth → validate → rules → render
   mock-runtime        Axum/Tokio listeners, lifecycle, history; `workbench-mock` CLI
+  workbench-storage   SQLite / PostgreSQL repositories and migrations
   workbench-api       (Phase 4) management API
-  workbench-storage   (Phase 2) SQLite / PostgreSQL repositories
   data-generator      (Phase 3) seeded synthetic data
   openapi-engine      (Phase 5) OpenAPI 3.x import/export
   project-archive     (Phase 5) portable project archives
@@ -108,14 +126,23 @@ pnpm dev:web
 pnpm lint && pnpm typecheck
 ```
 
+Storage tests always run on SQLite. To also run them on PostgreSQL, point
+`WORKBENCH_TEST_POSTGRES_URL` at a server where the user can create databases
+(each test creates and drops its own):
+
+```sh
+docker run -d --name workbench-pg -e POSTGRES_PASSWORD=workbench -p 127.0.0.1:5432:5432 postgres:17-alpine
+WORKBENCH_TEST_POSTGRES_URL=postgres://postgres:workbench@127.0.0.1:5432/postgres cargo test -p workbench-storage
+```
+
 ## Roadmap
 
 | Phase | Deliverable | Status |
 |---|---|---|
 | 0 | Repository, workspace, CI | Done |
 | 1 | Mock engine and runtime | Done |
-| 2 | Storage and persistence (SQLite, PostgreSQL) | Next |
-| 3 | Data generator and CRUD simulation | Planned |
+| 2 | Storage and persistence (SQLite, PostgreSQL) | Done |
+| 3 | Data generator and CRUD simulation | Next |
 | 4 | Management API, environments, history API | Planned |
 | 5 | OpenAPI, cURL import, project archives | Planned |
 | 6 | Web UI (API Studio) | Planned |

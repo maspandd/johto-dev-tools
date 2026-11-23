@@ -21,6 +21,10 @@ Thanks for helping build Developer Workbench.
    pnpm lint && pnpm typecheck
    ```
 
+   Storage changes must pass on PostgreSQL too: set `WORKBENCH_TEST_POSTGRES_URL`
+   (see the README) or rely on the `Storage (PostgreSQL)` CI job. Schema changes
+   need a new migration in **both** `migrations/sqlite` and `migrations/postgres`.
+
 4. Open a pull request describing what changed and why.
 
 ## Code conventions
