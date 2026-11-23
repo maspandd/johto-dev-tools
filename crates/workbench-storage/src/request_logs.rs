@@ -7,7 +7,7 @@ use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use sqlx::types::Json;
 use uuid::Uuid;
-use workbench_core::{EndpointId, MockServerId, ProjectId, RequestId, time};
+use workbench_core::{EndpointId, MockServerId, ProjectId, RequestId, ResourceId, time};
 use workbench_domain::{CapturedBody, HistoryFilter, HistoryRecord};
 
 use crate::error::map_constraint;
@@ -23,6 +23,8 @@ struct Details {
     request_body: Option<CapturedBody>,
     response_headers: Vec<(String, String)>,
     response_body: Option<CapturedBody>,
+    #[serde(default)]
+    matched_resource: Option<ResourceId>,
 }
 
 #[derive(sqlx::FromRow)]
@@ -59,6 +61,7 @@ impl TryFrom<RequestLogRow> for HistoryRecord {
             request_body: d.request_body,
             matched_endpoint: r.endpoint_id.map(EndpointId::from_uuid),
             matched_rule: r.matched_rule,
+            matched_resource: d.matched_resource,
             status,
             duration_ms,
             response_headers: d.response_headers,
@@ -84,6 +87,7 @@ impl Store {
             request_body: r.request_body.clone(),
             response_headers: r.response_headers.clone(),
             response_body: r.response_body.clone(),
+            matched_resource: r.matched_resource,
         });
         with_pool!(self, |pool| sqlx::query(
             "INSERT INTO request_logs (id, project_id, server_id, endpoint_id, timestamp, method, \

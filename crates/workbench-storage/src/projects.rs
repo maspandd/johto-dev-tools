@@ -5,12 +5,16 @@ use std::collections::BTreeMap;
 use chrono::{DateTime, Utc};
 use sqlx::types::Json;
 use uuid::Uuid;
-use workbench_core::{EndpointId, EnvironmentId, ProjectId, WorkspaceId, time};
+use workbench_core::{
+    DatasetId, EndpointId, EnvironmentId, ProjectId, ResourceId, WorkspaceId, time,
+};
 use workbench_domain::Project;
 
+use crate::datasets::{INSERT_DATASET, bind_dataset};
 use crate::endpoints::{INSERT_ENDPOINT, bind_endpoint};
 use crate::environments::{INSERT_ENVIRONMENT, bind_environment};
 use crate::error::map_constraint;
+use crate::resources::{INSERT_RESOURCE, bind_record, bind_resource};
 use crate::store::with_pool;
 use crate::{StorageError, StorageResult, Store};
 
@@ -191,8 +195,9 @@ impl Store {
         Ok(())
     }
 
-    /// Copies a project with its environments and endpoints under new IDs,
-    /// in one transaction. Request logs are not copied. The copy is
+    /// Copies a project with its environments, endpoints, resources (with
+    /// their records) and datasets under new IDs, in one transaction.
+    /// Request logs are not copied. The copy is
     /// independent: changing it never affects the original.
     pub async fn duplicate_project(
         &self,
@@ -202,6 +207,13 @@ impl Store {
         let source = self.get_project(id).await?;
         let environments = self.list_environments(id).await?;
         let endpoints = self.list_endpoints(id).await?;
+        let datasets = self.list_datasets(id).await?;
+        let mut resources = Vec::new();
+        for r in self.list_resources(id).await? {
+            let record = self.get_resource(r.id).await?;
+            let rows = self.load_resource_records(r.id).await?.unwrap_or_default();
+            resources.push((record, rows));
+        }
 
         let now = time::now();
         let copy = Project {
@@ -240,6 +252,28 @@ impl Store {
                 bind_endpoint!(INSERT_ENDPOINT, copy.id, ep, now)
                     .execute(&mut *tx)
                     .await?;
+            }
+            for (record, rows) in &resources {
+                let r = workbench_domain::Resource {
+                    id: ResourceId::new(),
+                    ..record.resource.clone()
+                };
+                bind_resource!(INSERT_RESOURCE, copy.id, r, record.data_initialized_at, now)
+                    .execute(&mut *tx)
+                    .await?;
+                for row in rows {
+                    bind_record!(r.id, row).execute(&mut *tx).await?;
+                }
+            }
+            for d in &datasets {
+                let d = workbench_domain::Dataset {
+                    id: DatasetId::new(),
+                    project_id: copy.id,
+                    created_at: now,
+                    updated_at: now,
+                    ..d.clone()
+                };
+                bind_dataset!(INSERT_DATASET, d).execute(&mut *tx).await?;
             }
             tx.commit().await?;
         });

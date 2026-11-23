@@ -80,6 +80,7 @@ fn record(endpoint: Option<EndpointId>, method: &str, status: u16, minutes: i64)
         }),
         matched_endpoint: endpoint,
         matched_rule: None,
+        matched_resource: None,
         status,
         duration_ms: 7,
         response_headers: vec![("content-type".into(), "application/json".into())],
