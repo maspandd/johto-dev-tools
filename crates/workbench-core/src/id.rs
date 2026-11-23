@@ -79,6 +79,14 @@ define_id!(
     MockServerId
 );
 define_id!(
+    /// Identifies a CRUD resource.
+    ResourceId
+);
+define_id!(
+    /// Identifies a generated dataset definition.
+    DatasetId
+);
+define_id!(
     /// Identifies a single handled request (used for tracing and error bodies).
     RequestId
 );

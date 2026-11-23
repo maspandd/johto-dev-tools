@@ -10,4 +10,7 @@ pub mod time;
 
 pub use bind::{BindAddress, BindError, DEFAULT_MOCK_PORT};
 pub use error::{ErrorBody, ErrorCode, ErrorDetail, ErrorEnvelope};
-pub use id::{EndpointId, EnvironmentId, MockServerId, ProjectId, RequestId, WorkspaceId};
+pub use id::{
+    DatasetId, EndpointId, EnvironmentId, MockServerId, ProjectId, RequestId, ResourceId,
+    WorkspaceId,
+};

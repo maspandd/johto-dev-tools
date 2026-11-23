@@ -3,7 +3,7 @@
 
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
-use workbench_core::{EndpointId, MockServerId, RequestId};
+use workbench_core::{EndpointId, MockServerId, RequestId, ResourceId};
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct CapturedBody {
@@ -25,6 +25,9 @@ pub struct HistoryRecord {
     pub request_body: Option<CapturedBody>,
     pub matched_endpoint: Option<EndpointId>,
     pub matched_rule: Option<String>,
+    /// The CRUD resource that handled the request, if any.
+    #[serde(default)]
+    pub matched_resource: Option<ResourceId>,
     pub status: u16,
     /// Total handling time including any simulated delay.
     pub duration_ms: u64,

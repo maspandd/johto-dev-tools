@@ -28,6 +28,10 @@ pub enum ErrorCode {
     PayloadTooLarge,
     /// The endpoint simulates authentication and the request lacks credentials.
     Unauthorized,
+    /// No record with the requested key exists in a CRUD resource.
+    RecordNotFound,
+    /// A record with the same primary key already exists.
+    RecordConflict,
     /// An unexpected internal failure.
     InternalError,
 }
@@ -43,6 +47,8 @@ impl ErrorCode {
             Self::RequestValidationFailed => 422,
             Self::PayloadTooLarge => 413,
             Self::Unauthorized => 401,
+            Self::RecordNotFound => 404,
+            Self::RecordConflict => 409,
             Self::InternalError => 500,
         }
     }
