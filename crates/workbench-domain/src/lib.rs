@@ -1,18 +1,29 @@
-//! Domain model for API Studio: endpoints, path templates, mock responses,
-//! and the declarative rules that pick a response.
+//! Domain model for API Studio: workspaces, projects, environments,
+//! endpoints, path templates, mock responses, response rules and
+//! captured request logs.
 //!
 //! Everything here is plain data plus validation. Execution lives in
 //! `mock-engine`; persistence lives in `workbench-storage`.
 
 pub mod endpoint;
+pub mod environment;
 pub mod method;
 pub mod path;
+pub mod project;
+pub mod request_log;
 pub mod response;
+pub mod validation;
+pub mod workspace;
 
 pub use endpoint::{
     AuthSimulation, Endpoint, EndpointValidationError, ParamSpec, RequestSpec, RouteConflict,
     find_route_conflicts,
 };
+pub use environment::Environment;
 pub use method::{Method, ParseMethodError};
 pub use path::{PathTemplate, PathTemplateError, Segment};
+pub use project::{PROJECT_FORMAT_VERSION, Project};
+pub use request_log::{CapturedBody, HistoryFilter, HistoryRecord};
 pub use response::{Condition, MockResponse, Operator, ResponseBody, ResponseRule, ValueSource};
+pub use validation::{FieldError, MAX_NAME_LEN};
+pub use workspace::Workspace;

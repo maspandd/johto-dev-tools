@@ -9,11 +9,8 @@ use std::collections::{HashSet, VecDeque};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, PoisonError};
 
-use chrono::{DateTime, Utc};
-use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use tokio::sync::mpsc;
-use workbench_core::{EndpointId, MockServerId, RequestId};
 
 use crate::HistoryConfig;
 
@@ -45,55 +42,7 @@ const DEFAULT_REDACTED_FIELDS: &[&str] = &[
     "cvv",
 ];
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct CapturedBody {
-    pub content: String,
-    /// Original size in bytes.
-    pub size: usize,
-    pub truncated: bool,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct HistoryRecord {
-    pub id: RequestId,
-    pub server_id: MockServerId,
-    pub timestamp: DateTime<Utc>,
-    pub method: String,
-    pub path: String,
-    pub query: Vec<(String, String)>,
-    pub request_headers: Vec<(String, String)>,
-    pub request_body: Option<CapturedBody>,
-    pub matched_endpoint: Option<EndpointId>,
-    pub matched_rule: Option<String>,
-    pub status: u16,
-    /// Total handling time including any simulated delay.
-    pub duration_ms: u64,
-    pub response_headers: Vec<(String, String)>,
-    pub response_body: Option<CapturedBody>,
-}
-
-/// Filters for [`HistoryStore::list`]. Every set field must match.
-#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
-pub struct HistoryFilter {
-    pub method: Option<String>,
-    pub status: Option<u16>,
-    pub endpoint: Option<EndpointId>,
-    pub since: Option<DateTime<Utc>>,
-    pub until: Option<DateTime<Utc>>,
-    pub limit: Option<usize>,
-}
-
-impl HistoryFilter {
-    fn matches(&self, r: &HistoryRecord) -> bool {
-        self.method
-            .as_ref()
-            .is_none_or(|m| m.eq_ignore_ascii_case(&r.method))
-            && self.status.is_none_or(|s| s == r.status)
-            && self.endpoint.is_none_or(|e| Some(e) == r.matched_endpoint)
-            && self.since.is_none_or(|t| r.timestamp >= t)
-            && self.until.is_none_or(|t| r.timestamp <= t)
-    }
-}
+pub use workbench_domain::{CapturedBody, HistoryFilter, HistoryRecord};
 
 /// In-memory, retention-bounded history for one server.
 /// Cheap to clone; clones share the same records.
@@ -295,7 +244,9 @@ impl Redactor {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use chrono::Utc;
     use serde_json::json;
+    use workbench_core::{MockServerId, RequestId};
 
     fn record(method: &str, status: u16) -> HistoryRecord {
         HistoryRecord {

@@ -7,6 +7,7 @@ use serde_json::Value;
 use thiserror::Error;
 use workbench_core::EndpointId;
 
+use crate::validation::is_valid_header_name;
 use crate::{Method, MockResponse, PathTemplate, ResponseRule, ValueSource};
 
 /// A user-defined mock endpoint.
@@ -90,14 +91,6 @@ pub enum EndpointValidationError {
     InvalidJsonPointer { rule: String, pointer: String },
     #[error("request body schema must be a JSON object or boolean")]
     InvalidBodySchema,
-}
-
-/// RFC 9110 token characters.
-fn is_valid_header_name(name: &str) -> bool {
-    !name.is_empty()
-        && name
-            .bytes()
-            .all(|b| b.is_ascii_alphanumeric() || b"!#$%&'*+-.^_`|~".contains(&b))
 }
 
 fn check_response(
