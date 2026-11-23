@@ -2,15 +2,16 @@
 
 use std::collections::HashMap;
 use std::net::SocketAddr;
+use std::sync::Arc;
 
 use chrono::{DateTime, Utc};
 use mock_engine::BuildErrors;
 use serde::{Deserialize, Serialize};
 use tokio::sync::Mutex;
 use workbench_core::MockServerId;
-use workbench_domain::Endpoint;
+use workbench_domain::{Endpoint, Resource};
 
-use crate::{HistoryStore, MockServerConfig, RunningServer, StartError};
+use crate::{HistoryStore, MockServerConfig, RecordStore, RunningServer, StartError};
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ServerStatus {
@@ -50,6 +51,20 @@ impl MockRuntimeManager {
         endpoints: &[Endpoint],
     ) -> Result<ServerStatus, StartError> {
         let server = RunningServer::start(config, endpoints).await?;
+        let status = ServerStatus::from(&server);
+        self.servers.lock().await.insert(server.id(), server);
+        Ok(status)
+    }
+
+    /// Starts a server with endpoints and CRUD resources backed by `store`.
+    pub async fn start_project(
+        &self,
+        config: MockServerConfig,
+        endpoints: &[Endpoint],
+        resources: &[Resource],
+        store: Arc<dyn RecordStore>,
+    ) -> Result<ServerStatus, StartError> {
+        let server = RunningServer::start_project(config, endpoints, resources, store).await?;
         let status = ServerStatus::from(&server);
         self.servers.lock().await.insert(server.id(), server);
         Ok(status)

@@ -99,5 +99,47 @@
       "enabled": false,
       "response": { "status": 200 }
     }
+  ],
+  "resources": [
+    {
+      "name": "products",
+      "path": "/api/products",
+      "key_strategy": "increment",
+      "schema": {
+        "fields": [
+          { "name": "sku", "type": "template", "template": "SKU-????-####", "unique": true },
+          { "name": "name", "type": "words", "min": 2, "max": 3 },
+          { "name": "price", "type": "decimal", "min": 5, "max": 500, "scale": 2 },
+          { "name": "in_stock", "type": "boolean" },
+          { "name": "supplier", "type": "company" },
+          { "name": "added", "type": "date", "from": "2025-01-01", "to": "2026-06-30" }
+        ]
+      },
+      "seed": { "count": 50, "seed": 2026 },
+      "body_schema": {
+        "type": "object",
+        "required": ["name", "price"],
+        "properties": {
+          "name": { "type": "string", "minLength": 1 },
+          "price": { "type": "number", "minimum": 0 }
+        }
+      },
+      "searchable": ["name", "sku", "supplier"],
+      "pagination": { "default_limit": 10, "max_limit": 50 }
+    },
+    {
+      "name": "reviews",
+      "path": "/api/reviews",
+      "schema": {
+        "fields": [
+          { "name": "product_id", "type": "reference", "resource": "products" },
+          { "name": "author", "type": "full_name" },
+          { "name": "rating", "type": "integer", "min": 1, "max": 5 },
+          { "name": "comment", "type": "words", "min": 3, "max": 8, "null_rate": 0.2 }
+        ]
+      },
+      "seed": { "count": 120, "seed": 7, "locale": "id" },
+      "delete": "soft"
+    }
   ]
 }

@@ -1,20 +1,32 @@
-//! Standalone mock server: serve the endpoints from a project JSON file.
+//! Standalone mock server: serve the endpoints and CRUD resources from a
+//! project JSON file.
 //!
 //! ```text
-//! workbench-mock <project.json> [--host <ip>] [--port <port>] [--expose] [--base-path <path>]
+//! workbench-mock <project.json> [--host <ip>] [--port <port>] [--expose]
+//!                [--base-path <path>] [--data-dir <dir> | --no-persist]
 //! ```
 //!
 //! Binds to 127.0.0.1:4010 by default. Binding to any other interface
-//! requires `--expose`. Stop with Ctrl+C; listeners are shut down gracefully.
+//! requires `--expose`. Resource data is saved under
+//! `.workbench-data/<project file name>/` next to the project file unless
+//! `--data-dir` or `--no-persist` is given. Stop with Ctrl+C; listeners are
+//! shut down gracefully and pending data is written.
 
 use std::net::IpAddr;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::ExitCode;
+use std::sync::Arc;
 
-use mock_runtime::{HistoryFilter, MockServerConfig, RunningServer};
+use mock_runtime::{
+    HistoryFilter, JsonFileRecordStore, MemoryRecordStore, MockServerConfig, RecordStore,
+    RunningServer,
+};
 use serde::Deserialize;
+use serde_json::Value;
 use tracing_subscriber::EnvFilter;
-use workbench_domain::Endpoint;
+use uuid::Uuid;
+use workbench_core::ResourceId;
+use workbench_domain::{Endpoint, Resource};
 
 /// Size cap for project files read from disk.
 const MAX_PROJECT_BYTES: u64 = 10 * 1024 * 1024;
@@ -24,7 +36,11 @@ struct ProjectFile {
     name: String,
     #[serde(default)]
     base_path: Option<String>,
+    #[serde(default)]
     endpoints: Vec<Endpoint>,
+    /// Parsed separately so resources without an `id` get a stable one.
+    #[serde(default)]
+    resources: Vec<Value>,
 }
 
 struct Args {
@@ -33,9 +49,12 @@ struct Args {
     port: Option<u16>,
     expose: bool,
     base_path: Option<String>,
+    data_dir: Option<PathBuf>,
+    persist: bool,
 }
 
-const USAGE: &str = "usage: workbench-mock <project.json> [--host <ip>] [--port <port>] [--expose] [--base-path <path>]";
+const USAGE: &str = "usage: workbench-mock <project.json> [--host <ip>] [--port <port>] [--expose] \
+                     [--base-path <path>] [--data-dir <dir> | --no-persist]";
 
 fn parse_args() -> Result<Args, String> {
     let mut project = None;
@@ -45,6 +64,8 @@ fn parse_args() -> Result<Args, String> {
         port: None,
         expose: false,
         base_path: None,
+        data_dir: None,
+        persist: true,
     };
     let mut it = std::env::args().skip(1);
     while let Some(arg) = it.next() {
@@ -59,6 +80,8 @@ fn parse_args() -> Result<Args, String> {
                 args.port = Some(v.parse().map_err(|_| format!("invalid --port `{v}`"))?);
             }
             "--base-path" => args.base_path = Some(value("--base-path")?),
+            "--data-dir" => args.data_dir = Some(PathBuf::from(value("--data-dir")?)),
+            "--no-persist" => args.persist = false,
             "--expose" => args.expose = true,
             "-h" | "--help" => return Err(USAGE.to_owned()),
             s if s.starts_with('-') => return Err(format!("unknown option `{s}`\n{USAGE}")),
@@ -67,10 +90,13 @@ fn parse_args() -> Result<Args, String> {
         }
     }
     args.project = project.ok_or_else(|| USAGE.to_owned())?;
+    if !args.persist && args.data_dir.is_some() {
+        return Err("--data-dir and --no-persist cannot be combined".to_owned());
+    }
     Ok(args)
 }
 
-fn load_project(path: &PathBuf) -> Result<ProjectFile, String> {
+fn load_project(path: &Path) -> Result<(ProjectFile, Vec<Resource>), String> {
     let meta =
         std::fs::metadata(path).map_err(|e| format!("cannot read {}: {e}", path.display()))?;
     if meta.len() > MAX_PROJECT_BYTES {
@@ -81,7 +107,43 @@ fn load_project(path: &PathBuf) -> Result<ProjectFile, String> {
     }
     let text = std::fs::read_to_string(path)
         .map_err(|e| format!("cannot read {}: {e}", path.display()))?;
-    serde_json::from_str(&text).map_err(|e| format!("invalid project file {}: {e}", path.display()))
+    let mut project: ProjectFile = serde_json::from_str(&text)
+        .map_err(|e| format!("invalid project file {}: {e}", path.display()))?;
+
+    // Resources without an explicit id get one derived from their name, so
+    // their saved data is found again on the next run.
+    let resources = std::mem::take(&mut project.resources)
+        .into_iter()
+        .map(|mut raw| {
+            if let Value::Object(map) = &mut raw
+                && !map.contains_key("id")
+            {
+                let name = map.get("name").and_then(Value::as_str).unwrap_or_default();
+                let stable = Uuid::new_v5(
+                    &Uuid::NAMESPACE_URL,
+                    format!("workbench-mock:{}:{name}", project.name).as_bytes(),
+                );
+                map.insert(
+                    "id".to_owned(),
+                    Value::String(ResourceId::from_uuid(stable).to_string()),
+                );
+            }
+            serde_json::from_value::<Resource>(raw)
+                .map_err(|e| format!("invalid resource in {}: {e}", path.display()))
+        })
+        .collect::<Result<Vec<_>, _>>()?;
+    Ok((project, resources))
+}
+
+fn default_data_dir(project: &Path) -> PathBuf {
+    let stem = project
+        .file_stem()
+        .map_or_else(|| "project".into(), |s| s.to_string_lossy().into_owned());
+    project
+        .parent()
+        .unwrap_or_else(|| Path::new("."))
+        .join(".workbench-data")
+        .join(stem)
 }
 
 #[tokio::main]
@@ -99,13 +161,29 @@ async fn main() -> ExitCode {
             return ExitCode::from(2);
         }
     };
-    let project = match load_project(&args.project) {
+    let (project, resources) = match load_project(&args.project) {
         Ok(p) => p,
         Err(msg) => {
             eprintln!("error: {msg}");
             return ExitCode::FAILURE;
         }
     };
+
+    let (store, data_note): (Arc<dyn RecordStore>, String) =
+        if !args.persist || resources.is_empty() {
+            (Arc::new(MemoryRecordStore::new()), "in memory".to_owned())
+        } else {
+            let dir = args
+                .data_dir
+                .unwrap_or_else(|| default_data_dir(&args.project));
+            match JsonFileRecordStore::open(&dir) {
+                Ok(store) => (Arc::new(store), format!("saved in {}", dir.display())),
+                Err(e) => {
+                    eprintln!("error: cannot use data directory {}: {e}", dir.display());
+                    return ExitCode::FAILURE;
+                }
+            }
+        };
 
     let mut config = MockServerConfig::default();
     if let Some(host) = args.host {
@@ -117,13 +195,14 @@ async fn main() -> ExitCode {
     config.bind.allow_network_exposure = args.expose;
     config.base_path = args.base_path.or(project.base_path);
 
-    let server = match RunningServer::start(config, &project.endpoints).await {
-        Ok(s) => s,
-        Err(e) => {
-            eprintln!("error: {e}");
-            return ExitCode::FAILURE;
-        }
-    };
+    let server =
+        match RunningServer::start_project(config, &project.endpoints, &resources, store).await {
+            Ok(s) => s,
+            Err(e) => {
+                eprintln!("error: {e}");
+                return ExitCode::FAILURE;
+            }
+        };
 
     let base = format!(
         "http://{}{}",
@@ -137,11 +216,16 @@ async fn main() -> ExitCode {
     );
     println!("Project: {}", project.name);
     println!(
-        "Mock server listening on {base} ({} routes)",
-        server.route_count()
+        "Mock server listening on {base} ({} endpoints, {} resources)",
+        server.route_count(),
+        resources.iter().filter(|r| r.enabled).count()
     );
     for ep in project.endpoints.iter().filter(|e| e.enabled) {
         println!("  {:<6} {base}{}", ep.method.as_str(), ep.path);
+    }
+    for r in resources.iter().filter(|r| r.enabled) {
+        let count = server.resource_records(r.id).map_or(0, |v| v.len());
+        println!("  CRUD   {base}{}  ({count} records, {data_note})", r.path);
     }
     println!("Press Ctrl+C to stop.");
 

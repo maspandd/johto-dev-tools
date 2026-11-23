@@ -1,6 +1,6 @@
 use std::net::SocketAddr;
 
-use mock_engine::BuildErrors;
+use mock_engine::{BuildErrors, SeedError};
 use thiserror::Error;
 use workbench_core::BindError;
 
@@ -19,4 +19,12 @@ pub enum StartError {
     },
     #[error("invalid endpoint configuration: {0}")]
     Build(#[from] BuildErrors),
+    #[error("cannot generate seed data: {0}")]
+    Seed(#[from] SeedError),
+    #[error("cannot load records for resource `{resource}`: {source}")]
+    Records {
+        resource: String,
+        #[source]
+        source: crate::RecordStoreError,
+    },
 }

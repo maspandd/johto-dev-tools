@@ -30,3 +30,6 @@ Thumbs.db
 
 # Local agent settings
 .claude/settings.local.json
+
+# workbench-mock local resource data
+.workbench-data/

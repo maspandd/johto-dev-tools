@@ -260,6 +260,7 @@ mod tests {
             request_body: None,
             matched_endpoint: None,
             matched_rule: None,
+            matched_resource: None,
             status,
             duration_ms: 0,
             response_headers: vec![],

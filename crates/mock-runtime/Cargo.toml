@@ -17,7 +17,7 @@ thiserror = "2.0.21"
 tokio = { version = "1.54.1", features = ["rt-multi-thread", "macros", "net", "sync", "time", "signal"] }
 tracing = "0.1.44"
 tracing-subscriber = { version = "0.3.23", features = ["env-filter"] }
-uuid = { version = "1.26.1", features = ["v4"] }
+uuid = { version = "1.26.1", features = ["v4", "v5"] }
 workbench-core = { version = "0.1.0", path = "../workbench-core" }
 workbench-domain = { version = "0.1.0", path = "../workbench-domain" }
 
@@ -27,3 +27,4 @@ workspace = true
 [dev-dependencies]
 reqwest = { version = "0.13.5", default-features = false, features = ["json"] }
 tokio = { version = "1.54.1", features = ["rt-multi-thread", "macros"] }
+uuid = { version = "1.26.1", features = ["v4"] }
