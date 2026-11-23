@@ -58,6 +58,7 @@ impl std::fmt::Debug for RunningServer {
 fn engine_config(config: &MockServerConfig) -> EngineConfig {
     EngineConfig {
         base_path: config.base_path.clone(),
+        default_headers: config.default_headers.clone(),
     }
 }
 
@@ -246,7 +247,7 @@ fn to_response(outcome: &MockOutcome) -> Response {
 
 async fn handle(State(state): State<Arc<AppState>>, req: Request) -> Response {
     let started = Instant::now();
-    let timestamp = Utc::now();
+    let timestamp = workbench_core::time::now();
     let (parts, body) = req.into_parts();
     let path_and_query = parts.uri.path_and_query().map_or("/", |pq| pq.as_str());
     let mut mreq = MockRequest::new(parts.method.as_str(), path_and_query);

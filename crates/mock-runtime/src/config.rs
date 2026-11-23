@@ -1,5 +1,6 @@
 //! Runtime configuration with conservative defaults.
 
+use std::collections::BTreeMap;
 use std::time::Duration;
 
 use serde::{Deserialize, Serialize};
@@ -12,6 +13,9 @@ pub struct MockServerConfig {
     /// Optional prefix for every route, e.g. `/mock`.
     #[serde(default)]
     pub base_path: Option<String>,
+    /// Headers added to every response unless the endpoint sets them.
+    #[serde(default)]
+    pub default_headers: BTreeMap<String, String>,
     /// Largest request body accepted, in bytes. Larger bodies get `413`.
     #[serde(default = "default_max_body_bytes")]
     pub max_body_bytes: usize,
@@ -36,6 +40,7 @@ impl Default for MockServerConfig {
         Self {
             bind: BindAddress::default(),
             base_path: None,
+            default_headers: BTreeMap::new(),
             max_body_bytes: default_max_body_bytes(),
             max_delay_ms: default_max_delay_ms(),
             history: HistoryConfig::default(),

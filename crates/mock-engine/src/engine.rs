@@ -23,6 +23,9 @@ use crate::{Entropy, MockRequest, SystemEntropy};
 pub struct EngineConfig {
     /// Optional prefix for every route, e.g. `/mock`. Must not contain parameters.
     pub base_path: Option<String>,
+    /// Headers added to every response unless the response already sets them
+    /// (project-level defaults, spec §4.1).
+    pub default_headers: BTreeMap<String, String>,
 }
 
 /// The result of handling one request.
@@ -96,6 +99,7 @@ struct CompiledEndpoint {
 /// An immutable, compiled set of routes. Rebuild it to apply configuration changes.
 pub struct Engine {
     base: Vec<String>,
+    default_headers: Vec<(String, String)>,
     endpoints: Vec<CompiledEndpoint>,
     routes: RouteTable,
     entropy: Arc<dyn Entropy>,
@@ -187,6 +191,11 @@ impl Engine {
         }
         Ok(Self {
             base,
+            default_headers: config
+                .default_headers
+                .iter()
+                .map(|(k, v)| (k.clone(), v.clone()))
+                .collect(),
             endpoints: compiled,
             routes,
             entropy: Arc::new(SystemEntropy),
@@ -209,6 +218,16 @@ impl Engine {
     /// Runs the full pipeline for one request. Never panics on bad input.
     #[must_use]
     pub fn handle(&self, req: &MockRequest) -> MockOutcome {
+        let mut out = self.route(req);
+        for (name, value) in &self.default_headers {
+            if !has_header(&out.headers, name) {
+                out.headers.push((name.clone(), value.clone()));
+            }
+        }
+        out
+    }
+
+    fn route(&self, req: &MockRequest) -> MockOutcome {
         let segments = path_segments(&req.path);
         let Some(rest) = segments.strip_prefix(self.base.as_slice()) else {
             return self.not_found(req);
@@ -528,6 +547,7 @@ mod tests {
         let err = Engine::build(
             &EngineConfig {
                 base_path: Some("/mock/:x".into()),
+                ..EngineConfig::default()
             },
             &[a, b, c, d],
         )
@@ -552,6 +572,7 @@ mod tests {
         let engine = Engine::build(
             &EngineConfig {
                 base_path: Some("/mock/v1/".into()),
+                ..EngineConfig::default()
             },
             &[endpoint(Method::Get, "/users", MockResponse::default())],
         )
@@ -785,6 +806,41 @@ mod tests {
         assert_eq!(
             json_body(&out)["error"]["request_id"],
             req.request_id.to_string()
+        );
+    }
+
+    #[test]
+    fn default_headers_apply_unless_overridden() {
+        let mut own = MockResponse::default();
+        own.headers.insert("X-Mock".into(), "endpoint".into());
+        let config = EngineConfig {
+            default_headers: BTreeMap::from([
+                ("x-mock".to_owned(), "project".to_owned()),
+                ("X-Team".to_owned(), "platform".to_owned()),
+            ]),
+            ..EngineConfig::default()
+        };
+        let engine = Engine::build(&config, &[endpoint(Method::Get, "/a", own)]).unwrap();
+
+        let out = engine.handle(&MockRequest::new("GET", "/a"));
+        assert_eq!(
+            out.header("x-mock"),
+            Some("endpoint"),
+            "endpoint header wins"
+        );
+        assert_eq!(out.header("x-team"), Some("platform"));
+        let count = out
+            .headers
+            .iter()
+            .filter(|(k, _)| k.eq_ignore_ascii_case("x-mock"))
+            .count();
+        assert_eq!(count, 1);
+
+        let missing = engine.handle(&MockRequest::new("GET", "/nope"));
+        assert_eq!(
+            missing.header("x-team"),
+            Some("platform"),
+            "errors get defaults too"
         );
     }
 }
