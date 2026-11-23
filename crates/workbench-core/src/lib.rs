@@ -6,6 +6,7 @@
 pub mod bind;
 pub mod error;
 pub mod id;
+pub mod time;
 
 pub use bind::{BindAddress, BindError, DEFAULT_MOCK_PORT};
 pub use error::{ErrorBody, ErrorCode, ErrorDetail, ErrorEnvelope};
