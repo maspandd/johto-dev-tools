@@ -1,0 +1,32 @@
+# Rust
+/target/
+
+# Node
+node_modules/
+dist/
+*.tsbuildinfo
+
+# Logs
+*.log
+npm-debug.log*
+pnpm-debug.log*
+
+# Environment and secrets
+.env
+.env.*
+!.env.example
+
+# Local databases
+*.sqlite
+*.sqlite3
+*.db
+
+# Editors and OS
+.vscode/*
+!.vscode/extensions.json
+.idea/
+.DS_Store
+Thumbs.db
+
+# Local agent settings
+.claude/settings.local.json
