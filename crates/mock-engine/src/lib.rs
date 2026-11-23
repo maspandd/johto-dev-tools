@@ -8,6 +8,8 @@
 //! outcome for the runtime to apply. This keeps it usable from any host
 //! (Axum server, Tauri desktop, tests) and makes it fully unit-testable.
 
+mod crud;
+mod data;
 mod engine;
 mod entropy;
 mod request;
@@ -15,6 +17,8 @@ mod router;
 mod rules;
 mod template;
 
+pub use crud::SeedError;
+pub use data::{ChangeListener, DataStore};
 pub use engine::{BuildErrors, BuildProblem, Engine, EngineConfig, MockOutcome};
 pub use entropy::{Entropy, SystemEntropy};
 pub use request::{MockRequest, parse_query};

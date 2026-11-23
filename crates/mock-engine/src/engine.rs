@@ -1,18 +1,22 @@
-//! The request pipeline that ties routing, validation, rules and templates together.
+//! The request pipeline that ties routing, validation, rules, templates
+//! and CRUD resources together.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::fmt::{self, Display};
 use std::sync::Arc;
 use std::time::Duration;
 
 use serde_json::Value;
 use thiserror::Error;
-use workbench_core::{EndpointId, ErrorCode, ErrorDetail, ErrorEnvelope};
+use workbench_core::{EndpointId, ErrorCode, ErrorDetail, ErrorEnvelope, ResourceId};
 use workbench_domain::{
-    AuthSimulation, Endpoint, EndpointValidationError, Method, MockResponse, PathTemplate,
-    ResponseBody, RouteConflict, Segment, find_route_conflicts,
+    AuthSimulation, DeleteBehavior, Endpoint, EndpointValidationError, FieldError, FieldKind,
+    Method, MockResponse, PathTemplate, RecordChange, Resource, ResponseBody, Segment,
+    StoredRecord,
 };
 
+use crate::crud::{CompiledResource, CrudOp, KEY_PARAM, Reference, SeedError};
+use crate::data::DataStore;
 use crate::request::path_segments;
 use crate::router::{Lookup, RouteTable};
 use crate::rules::RuleInput;
@@ -38,11 +42,30 @@ pub struct MockOutcome {
     pub delay: Duration,
     pub matched_endpoint: Option<EndpointId>,
     pub matched_rule: Option<String>,
+    pub matched_resource: Option<ResourceId>,
     /// Set when the engine itself produced an error response.
     pub error: Option<ErrorCode>,
+    /// Record changes the runtime must persist, in order.
+    pub changes: Vec<(ResourceId, RecordChange)>,
 }
 
 impl MockOutcome {
+    /// An empty response with the given status.
+    #[must_use]
+    pub const fn new(status: u16) -> Self {
+        Self {
+            status,
+            headers: Vec::new(),
+            body: Vec::new(),
+            delay: Duration::ZERO,
+            matched_endpoint: None,
+            matched_rule: None,
+            matched_resource: None,
+            error: None,
+            changes: Vec::new(),
+        }
+    }
+
     #[must_use]
     pub fn header(&self, name: &str) -> Option<&str> {
         self.headers
@@ -75,8 +98,19 @@ pub enum BuildProblem {
         name: String,
         message: String,
     },
-    #[error("route conflict: {} {} is defined by {} enabled endpoints", .0.method, .0.shape, .0.endpoints.len())]
-    Conflict(RouteConflict),
+    #[error("resource `{name}`: {}", join(.errors))]
+    InvalidResource {
+        name: String,
+        errors: Vec<FieldError>,
+    },
+    #[error("route conflict: {method} {shape} is defined by {}", .owners.join(", "))]
+    Conflict {
+        method: Method,
+        shape: String,
+        owners: Vec<String>,
+    },
+    #[error("resources reference each other in a cycle: {}", .0.join(" -> "))]
+    ReferenceCycle(Vec<String>),
     #[error("invalid base path `{path}`: {message}")]
     InvalidBasePath { path: String, message: String },
 }
@@ -96,12 +130,23 @@ struct CompiledEndpoint {
     schema: Option<jsonschema::Validator>,
 }
 
-/// An immutable, compiled set of routes. Rebuild it to apply configuration changes.
+#[derive(Debug, Clone, Copy)]
+enum Target {
+    Endpoint(usize),
+    Crud { resource: usize, op: CrudOp },
+}
+
+/// An immutable, compiled set of routes. Rebuild it to apply configuration
+/// changes; resource data lives in the shared [`DataStore`].
 pub struct Engine {
     base: Vec<String>,
     default_headers: Vec<(String, String)>,
     endpoints: Vec<CompiledEndpoint>,
+    resources: Vec<CompiledResource>,
+    targets: Vec<Target>,
     routes: RouteTable,
+    data: Arc<DataStore>,
+    seed_order: Vec<ResourceId>,
     entropy: Arc<dyn Entropy>,
 }
 
@@ -110,6 +155,7 @@ impl fmt::Debug for Engine {
         f.debug_struct("Engine")
             .field("base", &self.base)
             .field("endpoints", &self.endpoints.len())
+            .field("resources", &self.resources.len())
             .finish_non_exhaustive()
     }
 }
@@ -133,26 +179,127 @@ fn parse_base_path(raw: Option<&str>) -> Result<Vec<String>, BuildProblem> {
         .collect()
 }
 
+/// Shape of a segment list with parameter names erased, e.g. `/users/:`.
+fn shape(segments: &[Segment]) -> String {
+    if segments.is_empty() {
+        return "/".to_owned();
+    }
+    segments
+        .iter()
+        .map(|s| match s {
+            Segment::Static(v) => format!("/{v}"),
+            Segment::Param(_) => "/:".to_owned(),
+        })
+        .collect()
+}
+
+const CRUD_ROUTES: [(Method, bool, CrudOp); 6] = [
+    (Method::Get, false, CrudOp::List),
+    (Method::Post, false, CrudOp::Create),
+    (Method::Get, true, CrudOp::Get),
+    (Method::Put, true, CrudOp::Replace),
+    (Method::Patch, true, CrudOp::Patch),
+    (Method::Delete, true, CrudOp::Delete),
+];
+
+/// Orders resources so every referenced resource comes first.
+/// Self-references are allowed (they only matter for writes).
+fn seed_order(resources: &[CompiledResource]) -> Result<Vec<usize>, BuildProblem> {
+    let index: HashMap<&str, usize> = resources
+        .iter()
+        .enumerate()
+        .map(|(i, r)| (r.resource.name.as_str(), i))
+        .collect();
+    let deps: Vec<Vec<usize>> = resources
+        .iter()
+        .enumerate()
+        .map(|(i, r)| {
+            r.resource
+                .schema
+                .referenced_resources()
+                .into_iter()
+                .filter_map(|n| index.get(n).copied())
+                .filter(|&d| d != i)
+                .collect()
+        })
+        .collect();
+
+    // 0 = unvisited, 1 = in progress, 2 = done
+    fn visit(
+        i: usize,
+        deps: &[Vec<usize>],
+        state: &mut [u8],
+        stack: &mut Vec<usize>,
+        out: &mut Vec<usize>,
+    ) -> Result<(), Vec<usize>> {
+        match state[i] {
+            2 => return Ok(()),
+            1 => {
+                let start = stack.iter().position(|&s| s == i).unwrap_or(0);
+                let mut cycle = stack[start..].to_vec();
+                cycle.push(i);
+                return Err(cycle);
+            }
+            _ => {}
+        }
+        state[i] = 1;
+        stack.push(i);
+        for &d in &deps[i] {
+            visit(d, deps, state, stack, out)?;
+        }
+        stack.pop();
+        state[i] = 2;
+        out.push(i);
+        Ok(())
+    }
+
+    let mut state = vec![0u8; resources.len()];
+    let mut out = Vec::with_capacity(resources.len());
+    for i in 0..resources.len() {
+        visit(i, &deps, &mut state, &mut Vec::new(), &mut out).map_err(|cycle| {
+            BuildProblem::ReferenceCycle(
+                cycle
+                    .into_iter()
+                    .map(|c| resources[c].resource.name.clone())
+                    .collect(),
+            )
+        })?;
+    }
+    Ok(out)
+}
+
 impl Engine {
     /// Compiles the enabled endpoints. Disabled endpoints are skipped entirely,
     /// so they neither respond nor cause conflicts.
     pub fn build(config: &EngineConfig, endpoints: &[Endpoint]) -> Result<Self, BuildErrors> {
+        Self::build_with_resources(config, endpoints, &[], Arc::new(DataStore::new()))
+    }
+
+    /// Compiles endpoints and CRUD resources. `data` holds resource records
+    /// and should be reused across rebuilds so no data is lost.
+    pub fn build_with_resources(
+        config: &EngineConfig,
+        endpoints: &[Endpoint],
+        resources: &[Resource],
+        data: Arc<DataStore>,
+    ) -> Result<Self, BuildErrors> {
         let mut problems = Vec::new();
         let base = parse_base_path(config.base_path.as_deref()).unwrap_or_else(|p| {
             problems.push(p);
             Vec::new()
         });
 
-        let enabled: Vec<&Endpoint> = endpoints.iter().filter(|e| e.enabled).collect();
-        problems.extend(
-            find_route_conflicts(enabled.iter().copied())
-                .into_iter()
-                .map(BuildProblem::Conflict),
-        );
-
-        let mut compiled = Vec::with_capacity(enabled.len());
         let mut routes = RouteTable::default();
-        for endpoint in enabled {
+        let mut targets = Vec::new();
+        // (method, shape) -> descriptions of everything answering it
+        let mut owners: BTreeMap<(Method, String), Vec<String>> = BTreeMap::new();
+
+        let mut compiled = Vec::new();
+        for endpoint in endpoints.iter().filter(|e| e.enabled) {
+            owners
+                .entry((endpoint.method, endpoint.path.shape()))
+                .or_default()
+                .push(format!("endpoint `{}`", endpoint.name));
             if let Err(errors) = endpoint.validate() {
                 problems.push(BuildProblem::InvalidEndpoint {
                     id: endpoint.id,
@@ -178,13 +325,112 @@ impl Engine {
             routes.insert(
                 endpoint.method,
                 endpoint.path.segments().to_vec(),
-                compiled.len(),
+                targets.len(),
             );
+            targets.push(Target::Endpoint(compiled.len()));
             compiled.push(CompiledEndpoint {
                 endpoint: endpoint.clone(),
                 schema,
             });
         }
+
+        let enabled: Vec<&Resource> = resources.iter().filter(|r| r.enabled).collect();
+        let by_name: HashMap<&str, &Resource> =
+            enabled.iter().map(|r| (r.name.as_str(), *r)).collect();
+        let mut names = HashSet::new();
+        let mut compiled_resources = Vec::new();
+        for r in &enabled {
+            let mut errors = r.validate().err().unwrap_or_default();
+            if !names.insert(r.name.as_str()) {
+                errors.push(FieldError::new(
+                    "name",
+                    "another enabled resource has this name",
+                ));
+            }
+            for referenced in r.schema.referenced_resources() {
+                if !by_name.contains_key(referenced) {
+                    errors.push(FieldError::new(
+                        "schema",
+                        format!("references unknown or disabled resource `{referenced}`"),
+                    ));
+                }
+            }
+            let validator = match &r.body_schema {
+                None => None,
+                Some(schema) => match jsonschema::validator_for(schema) {
+                    Ok(v) => Some(v),
+                    Err(e) => {
+                        errors.push(FieldError::new("body_schema", e.to_string()));
+                        None
+                    }
+                },
+            };
+            if !errors.is_empty() {
+                problems.push(BuildProblem::InvalidResource {
+                    name: r.name.clone(),
+                    errors,
+                });
+                continue;
+            }
+
+            let references = r
+                .schema
+                .fields
+                .iter()
+                .filter_map(|f| match &f.kind {
+                    FieldKind::Reference { resource, field } => {
+                        by_name.get(resource.as_str()).map(|target| Reference {
+                            field: f.name.clone(),
+                            target: target.id,
+                            target_name: target.name.clone(),
+                            target_field: field.clone(),
+                            target_soft_delete: target.delete == DeleteBehavior::Soft,
+                        })
+                    }
+                    _ => None,
+                })
+                .collect();
+
+            let collection: Vec<Segment> = r.path.segments().to_vec();
+            let mut item = collection.clone();
+            item.push(Segment::Param(KEY_PARAM.to_owned()));
+            let index = compiled_resources.len();
+            for (method, is_item, op) in CRUD_ROUTES {
+                let segments = if is_item { &item } else { &collection };
+                owners
+                    .entry((method, shape(segments)))
+                    .or_default()
+                    .push(format!("resource `{}`", r.name));
+                routes.insert(method, segments.clone(), targets.len());
+                targets.push(Target::Crud {
+                    resource: index,
+                    op,
+                });
+            }
+            let prefix: String = base.iter().map(|s| format!("/{s}")).collect();
+            compiled_resources.push(CompiledResource {
+                resource: (*r).clone(),
+                validator,
+                collection_url: format!("{prefix}{}", r.path),
+                references,
+            });
+        }
+
+        problems.extend(owners.into_iter().filter(|(_, o)| o.len() > 1).map(
+            |((method, shape), owners)| BuildProblem::Conflict {
+                method,
+                shape,
+                owners,
+            },
+        ));
+
+        let order = match seed_order(&compiled_resources) {
+            Ok(order) => order,
+            Err(problem) => {
+                problems.push(problem);
+                Vec::new()
+            }
+        };
 
         if !problems.is_empty() {
             return Err(BuildErrors(problems));
@@ -196,8 +442,15 @@ impl Engine {
                 .iter()
                 .map(|(k, v)| (k.clone(), v.clone()))
                 .collect(),
+            seed_order: order
+                .into_iter()
+                .map(|i| compiled_resources[i].resource.id)
+                .collect(),
             endpoints: compiled,
+            resources: compiled_resources,
+            targets,
             routes,
+            data,
             entropy: Arc::new(SystemEntropy),
         })
     }
@@ -213,6 +466,47 @@ impl Engine {
     #[must_use]
     pub fn route_count(&self) -> usize {
         self.endpoints.len()
+    }
+
+    /// Active (enabled) resources.
+    pub fn resources(&self) -> impl Iterator<Item = &Resource> {
+        self.resources.iter().map(|r| &r.resource)
+    }
+
+    /// Resource IDs ordered so that referenced resources come first.
+    #[must_use]
+    pub fn seed_order(&self) -> &[ResourceId] {
+        &self.seed_order
+    }
+
+    /// The shared record store.
+    #[must_use]
+    pub fn data(&self) -> &Arc<DataStore> {
+        &self.data
+    }
+
+    /// Generates a resource's seed records, using the currently loaded
+    /// records of other resources for `reference` fields.
+    pub fn seed_records(&self, id: ResourceId) -> Result<Vec<StoredRecord>, SeedError> {
+        let compiled = self
+            .resources
+            .iter()
+            .find(|r| r.resource.id == id)
+            .ok_or(SeedError::UnknownResource(id))?;
+        let refs: HashMap<String, Vec<Value>> = compiled
+            .resource
+            .schema
+            .referenced_resources()
+            .into_iter()
+            .filter_map(|name| {
+                let target = self.resources.iter().find(|r| r.resource.name == name)?;
+                Some((
+                    name.to_owned(),
+                    self.data.records(target.resource.id).unwrap_or_default(),
+                ))
+            })
+            .collect();
+        compiled.seed(&refs)
     }
 
     /// Runs the full pipeline for one request. Never panics on bad input.
@@ -252,7 +546,16 @@ impl Engine {
                 out.headers.push(("allow".to_owned(), allow));
                 out
             }
-            Lookup::Found { target, params } => self.execute(&self.endpoints[target], req, &params),
+            Lookup::Found { target, params } => match self.targets[target] {
+                Target::Endpoint(i) => self.execute(&self.endpoints[i], req, &params),
+                Target::Crud { resource, op } => self.resources[resource].execute(
+                    op,
+                    params.get(KEY_PARAM).map(String::as_str),
+                    req,
+                    &self.data,
+                    self.entropy.as_ref(),
+                ),
+            },
         }
     }
 
@@ -376,7 +679,10 @@ fn check_auth(auth: &AuthSimulation, req: &MockRequest) -> Option<String> {
 
 /// Parses the body as JSON when it is declared as JSON or a schema expects it.
 /// Otherwise JSON parsing is best-effort so rules and templates can still read it.
-fn parse_body(req: &MockRequest, schema_expected: bool) -> Result<Option<Value>, String> {
+pub(crate) fn parse_body(
+    req: &MockRequest,
+    schema_expected: bool,
+) -> Result<Option<Value>, String> {
     if req.body.is_empty() {
         return Ok(None);
     }
@@ -419,17 +725,24 @@ fn render(response: &MockResponse, ctx: &TemplateContext<'_>) -> MockOutcome {
         headers.push(("content-type".to_owned(), ct.to_owned()));
     }
     MockOutcome {
-        status: response.status,
         headers,
         body,
         delay: Duration::from_millis(response.delay_ms),
-        matched_endpoint: None,
-        matched_rule: None,
-        error: None,
+        ..MockOutcome::new(response.status)
     }
 }
 
-fn error_outcome(
+/// A JSON response with the given status.
+pub(crate) fn json_outcome(status: u16, body: &Value) -> MockOutcome {
+    MockOutcome {
+        headers: vec![("content-type".to_owned(), "application/json".to_owned())],
+        body: serde_json::to_vec(body).unwrap_or_default(),
+        ..MockOutcome::new(status)
+    }
+}
+
+/// An error response using the shared envelope.
+pub(crate) fn error_outcome(
     req: &MockRequest,
     code: ErrorCode,
     message: impl Into<String>,
@@ -438,15 +751,12 @@ fn error_outcome(
     let envelope = ErrorEnvelope::new(code, message)
         .with_details(details)
         .with_request_id(req.request_id);
-    MockOutcome {
-        status: code.http_status(),
-        headers: vec![("content-type".to_owned(), "application/json".to_owned())],
-        body: serde_json::to_vec(&envelope).unwrap_or_default(),
-        delay: Duration::ZERO,
-        matched_endpoint: None,
-        matched_rule: None,
-        error: Some(code),
-    }
+    let mut out = json_outcome(
+        code.http_status(),
+        &serde_json::to_value(&envelope).unwrap_or_default(),
+    );
+    out.error = Some(code);
+    out
 }
 
 #[cfg(test)]
@@ -554,7 +864,11 @@ mod tests {
         .unwrap_err();
         assert_eq!(err.0.len(), 4, "{err}");
         assert!(matches!(err.0[0], BuildProblem::InvalidBasePath { .. }));
-        assert!(err.0.iter().any(|p| matches!(p, BuildProblem::Conflict(_))));
+        assert!(
+            err.0
+                .iter()
+                .any(|p| matches!(p, BuildProblem::Conflict { .. }))
+        );
         assert!(
             err.0
                 .iter()
