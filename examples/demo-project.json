@@ -1,0 +1,103 @@
+{
+  "name": "Demo API",
+  "endpoints": [
+    {
+      "name": "List users",
+      "method": "GET",
+      "path": "/api/users",
+      "request": {
+        "query": [{ "name": "page", "required": false, "description": "Page number" }]
+      },
+      "response": {
+        "status": 200,
+        "body": {
+          "type": "json",
+          "content": {
+            "data": [
+              { "id": "b7e7f6c4-01e5-4d65-95d7-8f54f4f2c201", "name": "Alex Morgan", "email": "alex@example.test" },
+              { "id": "3f1c2a9e-5b7d-4e8f-9a0b-1c2d3e4f5a6b", "name": "Sari Wulandari", "email": "sari@example.test" }
+            ],
+            "page": "{{ query.page }}"
+          }
+        }
+      }
+    },
+    {
+      "name": "Get user",
+      "method": "GET",
+      "path": "/api/users/:id",
+      "response": {
+        "status": 200,
+        "body": { "type": "json", "content": { "data": { "id": "{{ path.id }}", "name": "Alex Morgan", "email": "alex@example.test" } } }
+      },
+      "rules": [
+        {
+          "name": "Unknown user",
+          "when": [{ "source": { "from": "path", "name": "id" }, "operator": "equals", "value": "missing" }],
+          "response": {
+            "status": 404,
+            "body": { "type": "json", "content": { "error": "User {{ path.id }} not found" } }
+          }
+        }
+      ]
+    },
+    {
+      "name": "Current user",
+      "method": "GET",
+      "path": "/api/users/me",
+      "auth": { "type": "bearer" },
+      "response": {
+        "status": 200,
+        "body": { "type": "json", "content": { "data": { "id": "me", "name": "Signed-in User" } } }
+      }
+    },
+    {
+      "name": "Create user",
+      "method": "POST",
+      "path": "/api/users",
+      "request": {
+        "body_schema": {
+          "type": "object",
+          "required": ["name", "email"],
+          "properties": {
+            "name": { "type": "string", "minLength": 1 },
+            "email": { "type": "string" },
+            "age": { "type": "integer", "minimum": 0 }
+          }
+        },
+        "body_example": { "name": "Alex Morgan", "email": "alex@example.test" }
+      },
+      "response": {
+        "status": 201,
+        "headers": { "Location": "/api/users/{{ request.id }}" },
+        "body": {
+          "type": "json",
+          "content": { "data": { "id": "{{ request.id }}", "name": "{{ body.name }}", "email": "{{ body.email }}", "created_at": "{{ now }}" } }
+        }
+      }
+    },
+    {
+      "name": "Delete user",
+      "method": "DELETE",
+      "path": "/api/users/:id",
+      "response": { "status": 204 }
+    },
+    {
+      "name": "Slow report",
+      "method": "GET",
+      "path": "/api/reports/slow",
+      "response": {
+        "status": 200,
+        "delay_ms": 1500,
+        "body": { "type": "text", "content": "Report ready at {{ now }}" }
+      }
+    },
+    {
+      "name": "Legacy endpoint (disabled)",
+      "method": "GET",
+      "path": "/api/legacy",
+      "enabled": false,
+      "response": { "status": 200 }
+    }
+  ]
+}
