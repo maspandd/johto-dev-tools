@@ -1,0 +1,13 @@
+{
+  "name": "developer-workbench",
+  "private": true,
+  "license": "Apache-2.0",
+  "packageManager": "pnpm@11.8.0",
+  "engines": { "node": ">=24" },
+  "scripts": {
+    "dev:web": "pnpm --filter @workbench/web dev",
+    "build:web": "pnpm --filter @workbench/web build",
+    "lint": "pnpm -r lint",
+    "typecheck": "pnpm -r typecheck"
+  }
+}
