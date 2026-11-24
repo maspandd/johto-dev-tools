@@ -8,7 +8,7 @@ use arc_swap::ArcSwap;
 use axum::Router;
 use axum::body::Body;
 use axum::extract::{Request, State};
-use axum::http::{HeaderName, HeaderValue, StatusCode};
+use axum::http::{HeaderName, HeaderValue, StatusCode, header};
 use axum::response::Response;
 use chrono::{DateTime, Utc};
 use mock_engine::{
@@ -22,7 +22,9 @@ use workbench_core::{ErrorCode, ErrorEnvelope, MockServerId, ResourceId};
 use workbench_domain::{Endpoint, RecordChange, Resource};
 
 use crate::history::{HistoryListener, HistoryRecord, HistorySink, Redactor};
-use crate::{HistoryStore, MemoryRecordStore, MockServerConfig, RecordStore, StartError};
+use crate::{
+    CorsConfig, HistoryStore, MemoryRecordStore, MockServerConfig, RecordStore, StartError,
+};
 
 /// How long `stop` waits for in-flight requests before aborting them.
 const SHUTDOWN_GRACE: Duration = Duration::from_secs(5);
@@ -35,6 +37,7 @@ struct AppState {
     engine: Arc<ArcSwap<Engine>>,
     max_body_bytes: usize,
     max_delay: Duration,
+    cors: CorsConfig,
     history: Option<(HistorySink, Redactor)>,
 }
 
@@ -239,6 +242,7 @@ impl RunningServer {
             engine: Arc::clone(&engine),
             max_body_bytes: config.max_body_bytes,
             max_delay: config.max_delay(),
+            cors: config.cors.clone(),
             history: config.history.enabled.then(|| {
                 (
                     HistorySink::spawn(history.clone(), HISTORY_QUEUE, on_history),
@@ -464,10 +468,74 @@ fn to_response(outcome: &MockOutcome) -> Response {
     response
 }
 
+/// CORS headers for an allowed origin (simple and actual requests).
+fn add_cors(response: &mut Response, origin: &HeaderValue) {
+    let names: Vec<String> = response
+        .headers()
+        .keys()
+        .map(|k| k.as_str().to_owned())
+        .collect();
+    let headers = response.headers_mut();
+    headers.insert(header::ACCESS_CONTROL_ALLOW_ORIGIN, origin.clone());
+    headers.insert(
+        header::ACCESS_CONTROL_ALLOW_CREDENTIALS,
+        HeaderValue::from_static("true"),
+    );
+    headers.append(header::VARY, HeaderValue::from_static("origin"));
+    if let Ok(v) = HeaderValue::from_str(&names.join(", "))
+        && !names.is_empty()
+    {
+        headers.insert(header::ACCESS_CONTROL_EXPOSE_HEADERS, v);
+    }
+}
+
+/// Answers a CORS preflight. Not recorded in history.
+fn preflight(parts: &axum::http::request::Parts, origin: &HeaderValue) -> Response {
+    let mut response = Response::new(Body::empty());
+    *response.status_mut() = StatusCode::NO_CONTENT;
+    let headers = response.headers_mut();
+    headers.insert(header::ACCESS_CONTROL_ALLOW_ORIGIN, origin.clone());
+    headers.insert(
+        header::ACCESS_CONTROL_ALLOW_CREDENTIALS,
+        HeaderValue::from_static("true"),
+    );
+    headers.insert(
+        header::ACCESS_CONTROL_ALLOW_METHODS,
+        HeaderValue::from_static("GET, POST, PUT, PATCH, DELETE"),
+    );
+    if let Some(requested) = parts.headers.get(header::ACCESS_CONTROL_REQUEST_HEADERS) {
+        headers.insert(header::ACCESS_CONTROL_ALLOW_HEADERS, requested.clone());
+    }
+    headers.insert(
+        header::ACCESS_CONTROL_MAX_AGE,
+        HeaderValue::from_static("600"),
+    );
+    headers.insert(
+        header::VARY,
+        HeaderValue::from_static(
+            "origin, access-control-request-method, access-control-request-headers",
+        ),
+    );
+    response
+}
+
 async fn handle(State(state): State<Arc<AppState>>, req: Request) -> Response {
     let started = Instant::now();
     let timestamp = workbench_core::time::now();
     let (parts, body) = req.into_parts();
+    let cors_origin = parts
+        .headers
+        .get(header::ORIGIN)
+        .filter(|o| o.to_str().is_ok_and(|o| state.cors.allows(o)))
+        .cloned();
+    if let Some(origin) = &cors_origin
+        && parts.method == axum::http::Method::OPTIONS
+        && parts
+            .headers
+            .contains_key(header::ACCESS_CONTROL_REQUEST_METHOD)
+    {
+        return preflight(&parts, origin);
+    }
     let path_and_query = parts.uri.path_and_query().map_or("/", |pq| pq.as_str());
     let mut mreq = MockRequest::new(parts.method.as_str(), path_and_query);
     mreq.headers = header_pairs(&parts.headers);
@@ -485,7 +553,10 @@ async fn handle(State(state): State<Arc<AppState>>, req: Request) -> Response {
     if !outcome.delay.is_zero() {
         tokio::time::sleep(outcome.delay.min(state.max_delay)).await;
     }
-    let response = to_response(&outcome);
+    let mut response = to_response(&outcome);
+    if let Some(origin) = &cors_origin {
+        add_cors(&mut response, origin);
+    }
 
     if let Some((sink, redactor)) = &state.history {
         sink.record(HistoryRecord {

@@ -20,7 +20,7 @@ mod manager;
 mod record_store;
 mod server;
 
-pub use config::{HistoryConfig, MockServerConfig};
+pub use config::{CorsConfig, HistoryConfig, MockServerConfig};
 pub use error::StartError;
 pub use history::{CapturedBody, HistoryFilter, HistoryListener, HistoryRecord, HistoryStore};
 pub use manager::{MockRuntimeManager, ServerStatus};

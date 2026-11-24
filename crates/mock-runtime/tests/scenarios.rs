@@ -544,3 +544,82 @@ async fn method_not_allowed_sets_allow_header() {
     assert_eq!(res.headers()["allow"], "GET, POST");
     server.stop().await;
 }
+
+#[tokio::test]
+async fn browsers_on_local_origins_may_call_the_mock() {
+    let mut resp = MockResponse::json(200, json!({ "ok": true }));
+    resp.headers.insert("X-Total-Count".into(), "1".into());
+    let server = start(&[endpoint(Method::Get, "/things", resp)]).await;
+    let c = client();
+
+    let pre = c
+        .request(reqwest::Method::OPTIONS, url(&server, "/things"))
+        .header("origin", "http://localhost:5173")
+        .header("access-control-request-method", "GET")
+        .header("access-control-request-headers", "authorization, x-tenant")
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(pre.status(), StatusCode::NO_CONTENT);
+    assert_eq!(
+        pre.headers()["access-control-allow-origin"],
+        "http://localhost:5173"
+    );
+    assert_eq!(
+        pre.headers()["access-control-allow-headers"],
+        "authorization, x-tenant"
+    );
+
+    let get = c
+        .get(url(&server, "/things"))
+        .header("origin", "http://127.0.0.1:3000")
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(get.status(), StatusCode::OK);
+    assert_eq!(
+        get.headers()["access-control-allow-origin"],
+        "http://127.0.0.1:3000"
+    );
+    let exposed = get.headers()["access-control-expose-headers"]
+        .to_str()
+        .unwrap()
+        .to_owned();
+    assert!(exposed.contains("x-total-count"), "{exposed}");
+
+    // Other sites get no CORS headers, and their preflight is not answered.
+    let foreign = c
+        .get(url(&server, "/things"))
+        .header("origin", "https://evil.test")
+        .send()
+        .await
+        .unwrap();
+    assert!(
+        foreign
+            .headers()
+            .get("access-control-allow-origin")
+            .is_none()
+    );
+    let foreign_pre = c
+        .request(reqwest::Method::OPTIONS, url(&server, "/things"))
+        .header("origin", "https://evil.test")
+        .header("access-control-request-method", "DELETE")
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(foreign_pre.status(), StatusCode::METHOD_NOT_ALLOWED);
+    assert!(
+        foreign_pre
+            .headers()
+            .get("access-control-allow-origin")
+            .is_none()
+    );
+
+    // Preflights are not request history.
+    let records = wait_for_history(server.history(), 3).await;
+    assert!(
+        records
+            .iter()
+            .all(|r| r.method != "OPTIONS" || r.status == 405)
+    );
+}
