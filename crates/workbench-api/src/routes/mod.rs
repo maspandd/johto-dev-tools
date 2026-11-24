@@ -1,8 +1,10 @@
 //! Route table for `/api/v1` (spec §8).
 
+mod archive;
 mod datasets;
 mod endpoints;
 mod environments;
+mod openapi;
 mod projects;
 mod resources;
 mod servers;
@@ -15,6 +17,10 @@ use crate::AppState;
 
 pub(crate) fn api() -> Router<AppState> {
     Router::new()
+        .route(
+            "/openapi.json",
+            get(|| async { axum::Json(crate::api_doc::document()) }),
+        )
         .route(
             "/workspaces",
             get(workspaces::list).post(workspaces::create),
@@ -32,7 +38,13 @@ pub(crate) fn api() -> Router<AppState> {
                 .patch(projects::update)
                 .delete(projects::delete),
         )
+        .route("/projects/import", post(archive::import))
         .route("/projects/{id}/duplicate", post(projects::duplicate))
+        .route("/projects/{id}/export", get(archive::export))
+        .route("/projects/{id}/openapi/import", post(openapi::import))
+        .route("/projects/{id}/openapi/export", get(openapi::export))
+        .route("/openapi/validate", post(openapi::validate))
+        .route("/curl/parse", post(openapi::parse_curl))
         .route(
             "/projects/{id}/environments",
             get(environments::list).post(environments::create),

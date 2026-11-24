@@ -68,6 +68,27 @@ impl App {
         }
     }
 
+    /// Sends raw bytes; returns status, headers and raw response bytes.
+    async fn send_raw(
+        &self,
+        method: Method,
+        uri: &str,
+        body: Vec<u8>,
+        content_type: &str,
+    ) -> (StatusCode, HeaderMap, Vec<u8>) {
+        let req = Request::builder()
+            .method(method)
+            .uri(uri)
+            .header("content-type", content_type)
+            .body(Body::from(body))
+            .unwrap();
+        let res = self.router.clone().oneshot(req).await.unwrap();
+        let status = res.status();
+        let headers = res.headers().clone();
+        let bytes = res.into_body().collect().await.unwrap().to_bytes();
+        (status, headers, bytes.to_vec())
+    }
+
     async fn get(&self, uri: &str) -> Reply {
         self.send(Method::GET, uri, None, &[]).await
     }
@@ -831,4 +852,424 @@ async fn cors_allows_only_listed_origins() {
         .await
         .unwrap();
     assert!(!other.headers().contains_key("access-control-allow-origin"));
+}
+
+const PETS: &str = r#"
+openapi: 3.0.3
+info: { title: Pets, version: 1.0.0 }
+servers: [{ url: "https://api.example.test/v1" }]
+paths:
+  /pets:
+    get:
+      operationId: listPets
+      responses:
+        200:
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: '#/components/schemas/Pet' }
+    post:
+      operationId: createPet
+      requestBody:
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/Pet' }
+      responses:
+        '201': { description: Created, content: { application/json: { example: { id: 1 } } } }
+  /pets/{petId}:
+    get:
+      operationId: getPet
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              example: { id: "{{ path.petId }}", name: Rex }
+    options:
+      responses: { '200': { description: OK } }
+components:
+  schemas:
+    Pet:
+      type: object
+      required: [name]
+      properties:
+        id: { type: integer }
+        name: { type: string }
+"#;
+
+#[tokio::test]
+async fn openapi_validate_import_and_export() {
+    let app = app().await;
+    let project = app.project().await;
+
+    let (status, _, body) = app
+        .send_raw(
+            Method::POST,
+            "/api/v1/openapi/validate",
+            PETS.into(),
+            "application/yaml",
+        )
+        .await;
+    assert_eq!(status, StatusCode::OK);
+    let v: Value = serde_json::from_slice(&body).unwrap();
+    assert_eq!(v["data"]["valid"], true, "{v}");
+    assert_eq!(v["data"]["operations"], 4);
+    assert_eq!(v["data"]["importable"], 3);
+    let (_, _, body) = app
+        .send_raw(
+            Method::POST,
+            "/api/v1/openapi/validate",
+            b"swagger: '2.0'".to_vec(),
+            "text/plain",
+        )
+        .await;
+    let v: Value = serde_json::from_slice(&body).unwrap();
+    assert_eq!(v["data"]["valid"], false);
+    assert!(
+        v["data"]["issues"][0]["message"]
+            .as_str()
+            .unwrap()
+            .contains("Swagger")
+    );
+
+    // An existing endpoint on the same route.
+    let existing = app
+        .post(
+            &format!("/api/v1/projects/{project}/endpoints"),
+            json!({ "name": "Old list", "method": "GET", "path": "/pets" }),
+        )
+        .await;
+    assert_eq!(existing.status, StatusCode::CREATED);
+
+    let uri = format!("/api/v1/projects/{project}/openapi/import");
+    let preview = app
+        .post(&uri, json!({ "document": PETS, "dry_run": true }))
+        .await;
+    assert_eq!(preview.status, StatusCode::OK, "{:?}", preview.body);
+    let ops = preview.body["data"]["operations"].as_array().unwrap();
+    assert_eq!(ops.len(), 4);
+    assert_eq!(ops[0]["key"], "GET /pets");
+    assert_eq!(ops[0]["conflicts_with_project"], true);
+    assert_eq!(ops[3]["importable"], false);
+    let listed = app
+        .get(&format!("/api/v1/projects/{project}/endpoints"))
+        .await;
+    assert_eq!(listed.body["meta"]["total"], 1, "a dry run saves nothing");
+
+    let bad = app
+        .post(
+            &uri,
+            json!({ "document": PETS, "operations": ["OPTIONS /pets/{petId}"] }),
+        )
+        .await;
+    assert_eq!(bad.status, StatusCode::UNPROCESSABLE_ENTITY);
+    assert!(
+        bad.body["error"]["details"][0]["message"]
+            .as_str()
+            .unwrap()
+            .contains("cannot be imported")
+    );
+
+    let empty_doc =
+        json!({ "openapi": "3.1.0", "info": { "title": "x", "version": "1" }, "paths": {} });
+    let empty = app.post(&uri, json!({ "document": empty_doc })).await;
+    assert_eq!(empty.status, StatusCode::UNPROCESSABLE_ENTITY);
+
+    let imported = app
+        .post(
+            &uri,
+            json!({ "document": PETS, "operations": ["listPets", "getPet", "POST /pets"] }),
+        )
+        .await;
+    assert_eq!(imported.status, StatusCode::CREATED, "{:?}", imported.body);
+    let d = &imported.body["data"];
+    assert_eq!(d["imported"].as_array().unwrap().len(), 3);
+    assert_eq!(d["disabled_due_to_conflicts"], json!(["listPets"]));
+    assert_eq!(d["base_path_set"], "/v1");
+    let p = app.get(&format!("/api/v1/projects/{project}")).await;
+    assert_eq!(p.body["data"]["base_path"], "/v1");
+
+    // The imported endpoints serve requests.
+    let server = app.start_server(&project, json!({ "port": 0 })).await;
+    let base = server["url"].as_str().unwrap().to_owned();
+    assert!(base.ends_with("/v1"));
+    let c = http();
+    let pet: Value = c
+        .get(format!("{base}/pets/7"))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert_eq!(pet, json!({ "id": "7", "name": "Rex" }));
+    let invalid = c
+        .post(format!("{base}/pets"))
+        .json(&json!({ "id": 1 }))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(invalid.status(), 422, "imported schema validates bodies");
+    let ok = c
+        .post(format!("{base}/pets"))
+        .json(&json!({ "name": "Tom" }))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(ok.status(), 201);
+
+    // Export as YAML and JSON.
+    let (status, headers, body) = app
+        .send_raw(
+            Method::GET,
+            &format!("/api/v1/projects/{project}/openapi/export"),
+            vec![],
+            "text/plain",
+        )
+        .await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(headers["content-type"], "application/yaml");
+    assert!(
+        headers["content-disposition"]
+            .to_str()
+            .unwrap()
+            .contains("shop-api-openapi.yaml")
+    );
+    let exported = openapi_engine::parse_document(std::str::from_utf8(&body).unwrap()).unwrap();
+    assert_eq!(exported["servers"][0]["url"], "/v1");
+    let again = openapi_engine::analyze(&exported).unwrap();
+    assert!(!again.has_errors());
+    // The disabled duplicate of `GET /pets` gives way to the enabled one.
+    assert_eq!(again.operations.len(), 3);
+    assert_eq!(exported["paths"]["/pets"]["get"]["summary"], "Old list");
+    let json_export = app
+        .get(&format!(
+            "/api/v1/projects/{project}/openapi/export?format=json&version=2.0.0"
+        ))
+        .await;
+    assert_eq!(json_export.body["info"]["version"], "2.0.0");
+
+    let swagger = app
+        .post(&uri, json!({ "document": "swagger: '2.0'" }))
+        .await;
+    assert_eq!(swagger.status, StatusCode::UNPROCESSABLE_ENTITY);
+    assert_eq!(
+        swagger.body["error"]["details"][0]["location"],
+        "document/swagger"
+    );
+}
+
+#[tokio::test]
+async fn curl_commands_become_endpoint_drafts() {
+    let app = app().await;
+    let project = app.project().await;
+    app.patch(
+        &format!("/api/v1/projects/{project}"),
+        json!({ "base_path": "/api" }),
+    )
+    .await;
+    let command = r#"curl -X POST https://h.test/api/users/42/notes -H 'Authorization: Bearer s3cr3t' -d '{"text":"hi","password":"pw"}'"#;
+    let r = app
+        .post(
+            "/api/v1/curl/parse",
+            json!({ "command": command, "project_id": project }),
+        )
+        .await;
+    assert_eq!(r.status, StatusCode::OK, "{:?}", r.body);
+    let d = &r.body["data"];
+    assert_eq!(d["request"]["method"], "POST");
+    assert_eq!(d["request"]["headers"][0]["value"], "Bearer [REDACTED]");
+    assert_eq!(d["request"]["body"]["content"]["password"], "[REDACTED]");
+    assert!(!r.body.to_string().contains("s3cr3t"));
+    assert_eq!(d["endpoint"]["path"], "/users/:id/notes");
+    assert_eq!(d["endpoint"]["auth"]["type"], "bearer");
+
+    // The draft can be saved as-is.
+    let saved = app
+        .post(
+            &format!("/api/v1/projects/{project}/endpoints"),
+            d["endpoint"].clone(),
+        )
+        .await;
+    assert_eq!(saved.status, StatusCode::CREATED, "{:?}", saved.body);
+
+    let bad = app
+        .post("/api/v1/curl/parse", json!({ "command": "rm -rf /" }))
+        .await;
+    assert_eq!(bad.status, StatusCode::UNPROCESSABLE_ENTITY);
+    assert_eq!(bad.body["error"]["details"][0]["location"], "body.command");
+}
+
+#[tokio::test]
+async fn project_archives_round_trip() {
+    let app = app().await;
+    let project = app.project().await;
+    let ws = app.get(&format!("/api/v1/projects/{project}")).await.body["data"]["workspace_id"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    let env = app
+        .post(
+            &format!("/api/v1/projects/{project}/environments"),
+            json!({ "name": "Development", "variables": { "GREETING": "hi" } }),
+        )
+        .await;
+    let env_id = env.body["data"]["id"].as_str().unwrap().to_owned();
+    let put = app
+        .send(
+            Method::PUT,
+            &format!("/api/v1/environments/{env_id}/secrets/API_TOKEN"),
+            Some(json!({ "value": "very-secret-value" })),
+            &[],
+        )
+        .await;
+    assert_eq!(put.status, StatusCode::NO_CONTENT);
+    app.post(
+        &format!("/api/v1/projects/{project}/endpoints"),
+        json!({ "name": "Hello", "method": "GET", "path": "/hello",
+                "response": { "body": { "type": "json", "content": { "hi": "{{ env.GREETING }}" } } } }),
+    )
+    .await;
+    app.post(
+        &format!("/api/v1/projects/{project}/resources"),
+        json!({ "name": "users", "path": "/users", "key_strategy": "increment",
+                "schema": { "fields": [{ "name": "name", "type": "full_name" }] },
+                "seed": { "count": 3, "seed": 1 } }),
+    )
+    .await;
+    let server = app.start_server(&project, json!({ "port": 0 })).await;
+    let base = server["url"].as_str().unwrap().to_owned();
+    let created = http()
+        .post(format!("{base}/users"))
+        .json(&json!({ "name": "Imported Ayu" }))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(created.status(), 201);
+
+    let (status, headers, zip) = app
+        .send_raw(
+            Method::GET,
+            &format!("/api/v1/projects/{project}/export?records=true"),
+            vec![],
+            "text/plain",
+        )
+        .await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(headers["content-type"], "application/zip");
+    assert!(
+        !zip.windows(17).any(|w| w == b"very-secret-value"),
+        "secret values are never exported"
+    );
+
+    let preview_uri = format!("/api/v1/projects/import?workspace_id={ws}&preview=true");
+    let (status, _, body) = app
+        .send_raw(Method::POST, &preview_uri, zip.clone(), "application/zip")
+        .await;
+    assert_eq!(status, StatusCode::OK);
+    let preview: Value = serde_json::from_slice(&body).unwrap();
+    let p = &preview["data"];
+    assert_eq!(p["manifest"]["contents"]["records"], 4);
+    assert_eq!(p["endpoints"][0]["name"], "Hello");
+    assert_eq!(p["resources"][0]["records"], 4);
+    assert_eq!(
+        p["secrets_to_set"],
+        json!([{ "environment": "Development", "names": ["API_TOKEN"] }])
+    );
+    let projects = app
+        .get(&format!("/api/v1/projects?workspace_id={ws}"))
+        .await;
+    assert_eq!(projects.body["meta"]["total"], 1, "a preview saves nothing");
+
+    let (status, _, body) = app
+        .send_raw(
+            Method::POST,
+            &format!("/api/v1/projects/import?workspace_id={ws}&name=Restored"),
+            zip,
+            "application/zip",
+        )
+        .await;
+    let imported: Value = serde_json::from_slice(&body).unwrap();
+    assert_eq!(status, StatusCode::CREATED, "{imported}");
+    let new_id = imported["data"]["project"]["id"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    assert_ne!(new_id, project);
+    assert_eq!(imported["data"]["project"]["name"], "Restored");
+
+    let eps = app
+        .get(&format!("/api/v1/projects/{new_id}/endpoints"))
+        .await;
+    assert_eq!(eps.body["data"][0]["name"], "Hello");
+    let envs = app
+        .get(&format!("/api/v1/projects/{new_id}/environments"))
+        .await;
+    let new_env = envs.body["data"][0]["id"].as_str().unwrap().to_owned();
+    assert_eq!(envs.body["data"][0]["variables"]["GREETING"], "hi");
+    let secrets = app
+        .get(&format!("/api/v1/environments/{new_env}/secrets"))
+        .await;
+    assert_eq!(secrets.body["data"], json!([]));
+    let res = app
+        .get(&format!("/api/v1/projects/{new_id}/resources"))
+        .await;
+    let rid = res.body["data"][0]["id"].as_str().unwrap().to_owned();
+    let records = app.get(&format!("/api/v1/resources/{rid}/records")).await;
+    assert_eq!(records.body["meta"]["total"], 4);
+    assert_eq!(records.body["data"][3]["name"], "Imported Ayu");
+
+    let (status, _, body) = app
+        .send_raw(
+            Method::POST,
+            &format!("/api/v1/projects/import?workspace_id={ws}"),
+            b"definitely not a zip".to_vec(),
+            "application/zip",
+        )
+        .await;
+    assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY);
+    let err: Value = serde_json::from_slice(&body).unwrap();
+    assert_eq!(err["error"]["details"][0]["location"], "archive");
+    let (status, _, _) = app
+        .send_raw(
+            Method::POST,
+            "/api/v1/projects/import",
+            vec![1],
+            "application/zip",
+        )
+        .await;
+    assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY);
+}
+
+#[tokio::test]
+async fn management_api_describes_itself() {
+    let app = app().await;
+    let doc = app.get("/api/v1/openapi.json").await;
+    assert_eq!(doc.status, StatusCode::OK);
+    let analysis = openapi_engine::analyze(&doc.body).unwrap();
+    assert!(
+        !analysis.has_errors(),
+        "{:#?}",
+        analysis.all_issues().collect::<Vec<_>>()
+    );
+
+    // Every documented route exists in the router.
+    let id = "00000000-0000-4000-8000-000000000000";
+    let mut checked = 0;
+    for (path, item) in doc.body["paths"].as_object().unwrap() {
+        for method in item.as_object().unwrap().keys() {
+            let uri = format!("/api/v1{}", path.replace("{id}", id).replace("{name}", "X"));
+            let m = Method::from_bytes(method.to_uppercase().as_bytes()).unwrap();
+            let r = app.send(m, &uri, Some(json!({})), &[]).await;
+            assert_ne!(r.status, StatusCode::METHOD_NOT_ALLOWED, "{method} {path}");
+            assert_ne!(
+                r.body["error"]["code"], "ROUTE_NOT_FOUND",
+                "{method} {path}"
+            );
+            checked += 1;
+        }
+    }
+    assert!(checked >= 59, "{checked}");
 }

@@ -12,6 +12,7 @@
 //! - an optional bearer token protects every `/api/v1` route
 //! - environment secrets are encrypted at rest and never returned
 
+mod api_doc;
 mod error;
 mod extract;
 mod middleware;

@@ -1,4 +1,4 @@
-//! `/projects` (spec §8.2). Import/export arrive with project archives.
+//! `/projects` (spec §8.2). Archive import and export live in `archive.rs`.
 
 use axum::Json;
 use axum::extract::State;
