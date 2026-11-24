@@ -33,3 +33,6 @@ Thumbs.db
 
 # workbench-mock local resource data
 .workbench-data/
+
+# workbench-server local data (database, secret key)
+.workbench/
