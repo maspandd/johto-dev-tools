@@ -1317,3 +1317,63 @@ async fn put_replaces_definitions_and_keeps_nulls() {
         "method and path are required"
     );
 }
+
+#[tokio::test]
+async fn serves_the_web_ui_with_client_side_routes() {
+    let dir = std::env::temp_dir().join(format!("wb-web-{}", uuid::Uuid::new_v4()));
+    std::fs::create_dir_all(dir.join("assets")).unwrap();
+    std::fs::write(
+        dir.join("index.html"),
+        "<!doctype html><title>Workbench</title>",
+    )
+    .unwrap();
+    std::fs::write(dir.join("assets/app.js"), "console.log(1)").unwrap();
+    let app = app_with(ApiConfig {
+        web_dir: Some(dir.clone()),
+        ..ApiConfig::default()
+    })
+    .await;
+
+    let (status, headers, body) = app
+        .send_raw(Method::GET, "/assets/app.js", vec![], "text/plain")
+        .await;
+    assert_eq!(status, StatusCode::OK);
+    assert!(
+        headers["content-type"]
+            .to_str()
+            .unwrap()
+            .contains("javascript")
+    );
+    assert_eq!(body, b"console.log(1)");
+
+    // Client-side routes get index.html.
+    let (status, _, body) = app
+        .send_raw(Method::GET, "/p/123/endpoints", vec![], "text/plain")
+        .await;
+    assert_eq!(status, StatusCode::OK);
+    assert!(String::from_utf8_lossy(&body).contains("<title>Workbench</title>"));
+
+    // The API keeps its JSON errors.
+    let missing = app.get("/api/v1/nope").await;
+    assert_eq!(missing.status, StatusCode::NOT_FOUND);
+    assert_eq!(missing.body["error"]["code"], "NOT_FOUND");
+    assert_eq!(app.get("/health").await.status, StatusCode::OK);
+    std::fs::remove_dir_all(dir).ok();
+}
+
+#[tokio::test]
+async fn operator_defaults_place_mock_servers() {
+    let app = app_with(ApiConfig {
+        mock: workbench_api::MockDefaults {
+            host: None,
+            public_host: Some("mock.example.test".into()),
+        },
+        ..ApiConfig::default()
+    })
+    .await;
+    let project = app.project().await;
+    let server = app.start_server(&project, json!({ "port": 0 })).await;
+    let url = server["url"].as_str().unwrap();
+    assert!(url.starts_with("http://mock.example.test:"), "{url}");
+    assert_eq!(server["host"], "127.0.0.1");
+}

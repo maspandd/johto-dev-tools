@@ -21,6 +21,7 @@ mod runtime;
 pub mod secrets;
 mod util;
 
+use std::path::PathBuf;
 use std::sync::Arc;
 
 use axum::Router;
@@ -30,12 +31,13 @@ use axum::response::IntoResponse;
 use axum::routing::get;
 use serde_json::json;
 use tower_http::cors::{AllowOrigin, CorsLayer};
+use tower_http::services::{ServeDir, ServeFile};
 use tower_http::trace::TraceLayer;
 use workbench_core::ErrorCode;
 use workbench_storage::{Backend, Store};
 
 pub use error::{ApiError, ApiResult};
-pub use runtime::{MockServerInfo, MockServers, StartRequest};
+pub use runtime::{MockDefaults, MockServerInfo, MockServers, StartRequest};
 pub use secrets::SecretKey;
 
 /// Default origins of the web UI's development server.
@@ -51,6 +53,10 @@ pub struct ApiConfig {
     pub history_retention: usize,
     /// Largest accepted request body, in bytes.
     pub max_body_bytes: usize,
+    /// The built web UI (`apps/web/dist`), served at `/` when set.
+    pub web_dir: Option<PathBuf>,
+    /// Defaults for where mock servers listen (see [`MockDefaults`]).
+    pub mock: MockDefaults,
 }
 
 impl Default for ApiConfig {
@@ -63,6 +69,8 @@ impl Default for ApiConfig {
                 .collect(),
             history_retention: 1_000,
             max_body_bytes: 5 * 1024 * 1024,
+            web_dir: None,
+            mock: MockDefaults::default(),
         }
     }
 }
@@ -80,7 +88,11 @@ impl AppState {
     /// Must be called inside a Tokio runtime (it spawns the history writer).
     #[must_use]
     pub fn new(store: Store, secret_key: SecretKey, config: ApiConfig) -> Self {
-        let runtime = Arc::new(MockServers::new(store.clone(), config.history_retention));
+        let runtime = Arc::new(MockServers::with_defaults(
+            store.clone(),
+            config.history_retention,
+            config.mock.clone(),
+        ));
         Self {
             store,
             runtime,
@@ -139,18 +151,27 @@ fn cors(origins: &[String]) -> Option<CorsLayer> {
     )
 }
 
-/// The complete application: `/health` plus the API under `/api/v1`.
+/// The complete application: `/health`, the API under `/api/v1`, and the
+/// web UI at `/` when `web_dir` is set (unknown paths get `index.html`, so
+/// client-side routes work on reload).
 pub fn router(state: AppState) -> Router {
-    let api = routes::api().route_layer(axum::middleware::from_fn_with_state(
-        state.clone(),
-        middleware::require_token,
-    ));
+    let api = routes::api()
+        .route_layer(axum::middleware::from_fn_with_state(
+            state.clone(),
+            middleware::require_token,
+        ))
+        .fallback(not_found)
+        .method_not_allowed_fallback(method_not_allowed);
     let mut app = Router::new()
         .route("/health", get(health))
         .nest("/api/v1", api)
-        .fallback(not_found)
         .method_not_allowed_fallback(method_not_allowed)
         .layer(DefaultBodyLimit::max(state.config.max_body_bytes));
+    app = match &state.config.web_dir {
+        Some(dir) => app
+            .fallback_service(ServeDir::new(dir).fallback(ServeFile::new(dir.join("index.html")))),
+        None => app.fallback(not_found),
+    };
     if let Some(cors) = cors(&state.config.cors_origins) {
         app = app.layer(cors);
     }

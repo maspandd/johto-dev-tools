@@ -73,6 +73,32 @@ struct Managed {
     environment_id: Option<EnvironmentId>,
     resources: usize,
     last_reload_error: Option<String>,
+    public_host: Option<String>,
+}
+
+/// Where mock servers listen and how their URLs are reported, set by the
+/// operator (for example in a container).
+#[derive(Debug, Clone, Default)]
+pub struct MockDefaults {
+    /// Used when a start request names no host and the environment keeps
+    /// the loopback default. A non-loopback address here is the
+    /// operator's opt-in to network exposure, e.g. `0.0.0.0` in a
+    /// container whose ports are published.
+    pub host: Option<IpAddr>,
+    /// Host name in reported URLs, e.g. `localhost` for published ports.
+    pub public_host: Option<String>,
+}
+
+/// `host:port` for a URL. Unspecified addresses (`0.0.0.0`, `::`) are
+/// shown as `localhost`, which is where a browser on this machine reaches them.
+fn url_authority(addr: std::net::SocketAddr, public_host: Option<&str>) -> String {
+    let host = match public_host {
+        Some(h) => h.to_owned(),
+        None if addr.ip().is_unspecified() => "localhost".to_owned(),
+        None if addr.is_ipv6() => format!("[{}]", addr.ip()),
+        None => addr.ip().to_string(),
+    };
+    format!("{host}:{}", addr.port())
 }
 
 impl Managed {
@@ -85,7 +111,8 @@ impl Managed {
             environment_id: self.environment_id,
             status: "running",
             url: format!(
-                "http://{addr}{}",
+                "http://{}{}",
+                url_authority(addr, self.public_host.as_deref()),
                 base.as_deref().unwrap_or("").trim_end_matches('/')
             ),
             host: addr.ip(),
@@ -107,6 +134,7 @@ const PRUNE_EVERY: u32 = 100;
 
 pub struct MockServers {
     store: Store,
+    defaults: MockDefaults,
     servers: Mutex<HashMap<MockServerId, Managed>>,
     history_tx: mpsc::Sender<(ProjectId, HistoryRecord)>,
 }
@@ -144,10 +172,17 @@ impl MockServers {
     /// logs kept per project.
     #[must_use]
     pub fn new(store: Store, retention: usize) -> Self {
+        Self::with_defaults(store, retention, MockDefaults::default())
+    }
+
+    /// Like [`MockServers::new`], with operator defaults for binding.
+    #[must_use]
+    pub fn with_defaults(store: Store, retention: usize, defaults: MockDefaults) -> Self {
         let (history_tx, rx) = mpsc::channel(HISTORY_QUEUE);
         tokio::spawn(persist_history(store.clone(), retention.max(1), rx));
         Self {
             store,
+            defaults,
             servers: Mutex::new(HashMap::new()),
             history_tx,
         }
@@ -193,6 +228,11 @@ impl MockServers {
         let mut bind = environment.as_ref().map(|e| e.bind).unwrap_or_default();
         if let Some(host) = req.host {
             bind.host = host;
+        } else if let Some(host) = self.defaults.host
+            && bind.host.is_loopback()
+        {
+            bind.host = host;
+            bind.allow_network_exposure = !host.is_loopback();
         }
         if let Some(port) = req.port {
             bind.port = port;
@@ -237,6 +277,7 @@ impl MockServers {
             environment_id: environment.map(|e| e.id),
             resources: active_resources,
             last_reload_error: None,
+            public_host: self.defaults.public_host.clone(),
         };
         let info = managed.info();
         servers.insert(info.id, managed);
