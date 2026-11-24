@@ -7,10 +7,11 @@ REST endpoints without writing a backend, then serve them from a real local
 mock HTTP server with validation, response rules, dynamic templates and
 request history.
 
-> **Status: early development.** The mock engine, CRUD simulation, data
-> generator, SQLite/PostgreSQL storage, the management API, OpenAPI and cURL
-> import, portable project archives and the API Studio web UI work today. The
-> visual editor and desktop app are on the [roadmap](#roadmap). The product spec is in
+> **Status: early development.** API Studio is usable end to end: the mock
+> engine, CRUD simulation, data generator, SQLite/PostgreSQL storage, the
+> management API, OpenAPI and cURL import, project archives, the web UI, a
+> desktop app and a Docker image. Other modules are on the [roadmap](#roadmap).
+> The product spec is in
 > [docs/developer_workbench_product_spec.md](docs/developer_workbench_product_spec.md).
 
 ## Quick start
@@ -43,6 +44,27 @@ next to any endpoint; every call shows up in the request history panel.
 The dev server forwards `/api` to `127.0.0.1:8080` (override with
 `WORKBENCH_API`). When the API runs with `WORKBENCH_API_TOKEN`, enter the token
 under **Settings**; it is kept in that browser only.
+
+### Desktop app
+
+```sh
+pnpm install
+pnpm dev:desktop       # or: pnpm build:desktop for installers
+```
+
+A Tauri 2 app that runs the API in-process with SQLite in the app data folder:
+offline, no account, nothing else to start. See [apps/desktop](apps/desktop/README.md).
+
+### Docker
+
+```sh
+cp .env.example .env   # set WORKBENCH_API_TOKEN and POSTGRES_PASSWORD
+docker compose up -d --build
+```
+
+The UI, API and mock servers on <http://localhost:8080> with PostgreSQL. See
+[docs/self-hosting.md](docs/self-hosting.md) for a single SQLite container,
+settings and exposing it to a network.
 
 ### Mock server from the command line
 
@@ -139,6 +161,10 @@ cargo run --bin workbench-server            # http://127.0.0.1:8080/api/v1
 Data lives in `.workbench/` (SQLite database and the secret-encryption key) unless
 `WORKBENCH_DATABASE_URL` points at PostgreSQL. Set `WORKBENCH_API_TOKEN` to require
 `Authorization: Bearer <token>` (mandatory with `--host` other than loopback).
+`--web-dir apps/web/dist` also serves the built UI at `/`; `--mock-host` and
+`--mock-public-host` set where mock servers listen and the host their URLs show
+(used by the Docker image). `--health-check [port]` exits 0 when a local server
+is healthy.
 
 | Area | Routes (under `/api/v1`) |
 |---|---|
@@ -241,7 +267,7 @@ crates/
   project-archive     Portable .zip project archives with format migrations
 apps/
   web                 API Studio: React, TypeScript, Vite, Tailwind, TanStack Query, Monaco
-  desktop             (Phase 7) Tauri 2 shell
+  desktop             Tauri 2 desktop app with the API in-process (own Cargo workspace)
 ```
 
 ## Development
@@ -276,7 +302,8 @@ WORKBENCH_TEST_POSTGRES_URL=postgres://postgres:workbench@127.0.0.1:5432/postgre
 | 4 | Management API, environments, history API | Done |
 | 5 | OpenAPI, cURL import, project archives | Done |
 | 6 | Web UI (API Studio) | Done |
-| 7 | Desktop app and Docker self-hosting | Next |
+| 7 | Desktop app and Docker self-hosting | Done |
+| Next | SQL Lab, Data Lab, Code Generator, Testing Lab, Developer Utilities | Planned |
 
 ## Contributing and security
 
