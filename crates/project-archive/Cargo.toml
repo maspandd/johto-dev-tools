@@ -7,6 +7,14 @@ license.workspace = true
 repository.workspace = true
 
 [dependencies]
+chrono = { version = "0.4.45", default-features = false, features = ["clock", "std", "serde"] }
+openapi-engine = { version = "0.1.0", path = "../openapi-engine" }
+serde = { version = "1.0.229", features = ["derive"] }
+serde_json = { version = "1.0.154", features = ["preserve_order"] }
+thiserror = "2.0.21"
+workbench-core = { version = "0.1.0", path = "../workbench-core" }
+workbench-domain = { version = "0.1.0", path = "../workbench-domain" }
+zip = { version = "9.8.2", default-features = false, features = ["deflate-flate2-zlib-rs"] }
 
 [lints]
 workspace = true
