@@ -156,6 +156,10 @@ impl CorsConfig {
         {
             return true;
         }
+        // The desktop app's pages on macOS and Linux.
+        if origin == "tauri://localhost" {
+            return true;
+        }
         let Some(rest) = origin
             .strip_prefix("http://")
             .or_else(|| origin.strip_prefix("https://"))
@@ -187,6 +191,8 @@ mod tests {
             "http://[::1]:8080",
             "https://app.localhost",
             "http://LOCALHOST",
+            "tauri://localhost",
+            "http://tauri.localhost",
         ] {
             assert!(cors.allows(ok), "{ok}");
         }
@@ -196,6 +202,7 @@ mod tests {
             "http://127.0.0.1.evil.test:80",
             "null",
             "file://",
+            "tauri://evil.test",
         ] {
             assert!(!cors.allows(no), "{no}");
         }
