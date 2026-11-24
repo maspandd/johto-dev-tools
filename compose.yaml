@@ -1,0 +1,47 @@
+# Self-hosted Developer Workbench with PostgreSQL.
+#
+#   cp .env.example .env      # then set WORKBENCH_API_TOKEN and POSTGRES_PASSWORD
+#   docker compose up -d --build
+#
+# Open http://localhost:8080 and enter the token under Settings.
+# Ports are published on 127.0.0.1 only; see docs/self-hosting.md before
+# exposing them to a network.
+
+services:
+  workbench:
+    build: .
+    image: developer-workbench:local
+    restart: unless-stopped
+    environment:
+      WORKBENCH_API_TOKEN: ${WORKBENCH_API_TOKEN:?set WORKBENCH_API_TOKEN in .env}
+      WORKBENCH_DATABASE_URL: postgres://workbench:${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in .env}@postgres:5432/workbench
+      # Optional: 64 hex characters. Otherwise a key is created in the data volume.
+      WORKBENCH_SECRET_KEY: ${WORKBENCH_SECRET_KEY:-}
+    ports:
+      - "127.0.0.1:${WORKBENCH_PORT:-8080}:8080"
+      # Mock servers. Start them on ports in this range.
+      - "127.0.0.1:4010-4019:4010-4019"
+    volumes:
+      - workbench-data:/data
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+  postgres:
+    image: postgres:17-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: workbench
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in .env}
+      POSTGRES_DB: workbench
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U workbench -d workbench"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+
+volumes:
+  workbench-data:
+  postgres-data:
