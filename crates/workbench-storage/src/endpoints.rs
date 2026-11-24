@@ -187,6 +187,36 @@ impl Store {
         Ok(())
     }
 
+    /// Adds several endpoints at the end of the project's list, in order,
+    /// in one transaction: all are saved or none are.
+    pub async fn create_endpoints(
+        &self,
+        project_id: ProjectId,
+        endpoints: &[Endpoint],
+    ) -> StorageResult<()> {
+        for e in endpoints {
+            validate(e)?;
+        }
+        let now = time::now();
+        let result: Result<(), sqlx::Error> = with_pool!(self, |pool| async {
+            let mut tx = pool.begin().await?;
+            for e in endpoints {
+                bind_endpoint!(INSERT_ENDPOINT, project_id, e, now)
+                    .execute(&mut *tx)
+                    .await?;
+            }
+            tx.commit().await
+        }
+        .await);
+        result.map_err(|err| {
+            map_constraint(
+                err,
+                || StorageError::Conflict("an endpoint with the same ID already exists".into()),
+                || StorageError::not_found("project", project_id),
+            )
+        })
+    }
+
     pub async fn get_endpoint(&self, id: EndpointId) -> StorageResult<EndpointRecord> {
         let sql = format!("SELECT {COLUMNS} FROM endpoints WHERE id = $1");
         let row: Option<EndpointRow> = with_pool!(self, |pool| sqlx::query_as(&sql)

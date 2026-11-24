@@ -25,6 +25,7 @@ mod workspaces;
 
 pub use endpoints::EndpointRecord;
 pub use error::{StorageError, StorageResult};
+pub use projects::ProjectTree;
 pub use resources::ResourceRecord;
 pub use secrets::{EncryptedSecret, SecretMeta};
 pub use store::{Backend, Store};

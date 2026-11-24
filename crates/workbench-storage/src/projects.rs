@@ -8,7 +8,9 @@ use uuid::Uuid;
 use workbench_core::{
     DatasetId, EndpointId, EnvironmentId, ProjectId, ResourceId, WorkspaceId, time,
 };
-use workbench_domain::Project;
+use workbench_domain::{
+    Dataset, Endpoint, Environment, FieldError, Project, Resource, StoredRecord,
+};
 
 use crate::datasets::{INSERT_DATASET, bind_dataset};
 use crate::endpoints::{INSERT_ENDPOINT, bind_endpoint};
@@ -197,7 +199,7 @@ impl Store {
 
     /// Copies a project with its environments, endpoints, resources (with
     /// their records) and datasets under new IDs, in one transaction.
-    /// Request logs are not copied. The copy is
+    /// Request logs and secrets are not copied. The copy is
     /// independent: changing it never affects the original.
     pub async fn duplicate_project(
         &self,
@@ -205,16 +207,6 @@ impl Store {
         new_name: Option<&str>,
     ) -> StorageResult<Project> {
         let source = self.get_project(id).await?;
-        let environments = self.list_environments(id).await?;
-        let endpoints = self.list_endpoints(id).await?;
-        let datasets = self.list_datasets(id).await?;
-        let mut resources = Vec::new();
-        for r in self.list_resources(id).await? {
-            let record = self.get_resource(r.id).await?;
-            let rows = self.load_resource_records(r.id).await?.unwrap_or_default();
-            resources.push((record, rows));
-        }
-
         let now = time::now();
         let copy = Project {
             id: ProjectId::new(),
@@ -224,59 +216,175 @@ impl Store {
             updated_at: now,
             ..source
         };
-        copy.validate()
-            .map_err(|e| StorageError::invalid(ENTITY, e))?;
+        let environments = self
+            .list_environments(id)
+            .await?
+            .into_iter()
+            .map(|env| Environment {
+                id: EnvironmentId::new(),
+                project_id: copy.id,
+                created_at: now,
+                updated_at: now,
+                ..env
+            })
+            .collect();
+        let endpoints = self
+            .list_endpoints(id)
+            .await?
+            .into_iter()
+            .map(|ep| Endpoint {
+                id: EndpointId::new(),
+                ..ep
+            })
+            .collect();
+        let datasets = self
+            .list_datasets(id)
+            .await?
+            .into_iter()
+            .map(|d| Dataset {
+                id: DatasetId::new(),
+                project_id: copy.id,
+                created_at: now,
+                updated_at: now,
+                ..d
+            })
+            .collect();
+        let mut resources = Vec::new();
+        for r in self.list_resources(id).await? {
+            let records = self.load_resource_records(r.id).await?;
+            resources.push((
+                Resource {
+                    id: ResourceId::new(),
+                    ..r
+                },
+                records,
+            ));
+        }
+        self.insert_project_tree(&ProjectTree {
+            project: copy.clone(),
+            environments,
+            endpoints,
+            resources,
+            datasets,
+        })
+        .await?;
+        Ok(copy)
+    }
 
-        with_pool!(self, |pool| {
+    /// Inserts a project with everything in it, in one transaction: either
+    /// all of it is saved or none of it. Every item is validated first.
+    /// Used by imports and duplication; all IDs must be new.
+    pub async fn insert_project_tree(&self, tree: &ProjectTree) -> StorageResult<()> {
+        tree.validate()?;
+        let p = &tree.project;
+        let now = time::now();
+        let result: Result<(), sqlx::Error> = with_pool!(self, |pool| async {
             let mut tx = pool.begin().await?;
-            bind_project!(INSERT_PROJECT, copy)
-                .execute(&mut *tx)
-                .await?;
-            for env in &environments {
-                let env = workbench_domain::Environment {
-                    id: EnvironmentId::new(),
-                    project_id: copy.id,
-                    created_at: now,
-                    updated_at: now,
-                    ..env.clone()
-                };
+            bind_project!(INSERT_PROJECT, p).execute(&mut *tx).await?;
+            for env in &tree.environments {
                 bind_environment!(INSERT_ENVIRONMENT, env)
                     .execute(&mut *tx)
                     .await?;
             }
-            for ep in &endpoints {
-                let ep = workbench_domain::Endpoint {
-                    id: EndpointId::new(),
-                    ..ep.clone()
-                };
-                bind_endpoint!(INSERT_ENDPOINT, copy.id, ep, now)
+            for ep in &tree.endpoints {
+                bind_endpoint!(INSERT_ENDPOINT, p.id, ep, now)
                     .execute(&mut *tx)
                     .await?;
             }
-            for (record, rows) in &resources {
-                let r = workbench_domain::Resource {
-                    id: ResourceId::new(),
-                    ..record.resource.clone()
-                };
-                bind_resource!(INSERT_RESOURCE, copy.id, r, record.data_initialized_at, now)
+            for (r, records) in &tree.resources {
+                let initialized: Option<DateTime<Utc>> = records.as_ref().map(|_| now);
+                bind_resource!(INSERT_RESOURCE, p.id, r, initialized, now)
                     .execute(&mut *tx)
                     .await?;
-                for row in rows {
+                for row in records.iter().flatten() {
                     bind_record!(r.id, row).execute(&mut *tx).await?;
                 }
             }
-            for d in &datasets {
-                let d = workbench_domain::Dataset {
-                    id: DatasetId::new(),
-                    project_id: copy.id,
-                    created_at: now,
-                    updated_at: now,
-                    ..d.clone()
-                };
+            for d in &tree.datasets {
                 bind_dataset!(INSERT_DATASET, d).execute(&mut *tx).await?;
             }
-            tx.commit().await?;
-        });
-        Ok(copy)
+            tx.commit().await
+        }
+        .await);
+        result.map_err(|e| {
+            map_constraint(
+                e,
+                || {
+                    StorageError::Conflict(
+                        "environment, resource and dataset names must be unique within a project"
+                            .to_owned(),
+                    )
+                },
+                || StorageError::not_found("workspace", p.workspace_id),
+            )
+        })
+    }
+}
+
+/// A project with its contents, as inserted by
+/// [`Store::insert_project_tree`].
+#[derive(Debug, Clone, PartialEq)]
+pub struct ProjectTree {
+    pub project: Project,
+    pub environments: Vec<Environment>,
+    /// In display order.
+    pub endpoints: Vec<Endpoint>,
+    /// Resources with their records; `None` means not yet seeded.
+    pub resources: Vec<(Resource, Option<Vec<StoredRecord>>)>,
+    pub datasets: Vec<Dataset>,
+}
+
+impl ProjectTree {
+    fn validate(&self) -> StorageResult<()> {
+        let p = &self.project;
+        p.validate().map_err(|e| StorageError::invalid(ENTITY, e))?;
+        let mut errors = Vec::new();
+        let mut owner = |kind: &str, name: &str, project_id: ProjectId| {
+            if project_id != p.id {
+                errors.push(FieldError::new(
+                    format!("{kind} `{name}`"),
+                    "belongs to another project",
+                ));
+            }
+        };
+        for env in &self.environments {
+            owner("environment", &env.name, env.project_id);
+        }
+        for d in &self.datasets {
+            owner("dataset", &d.name, d.project_id);
+        }
+        let prefixed = |kind: &str, name: &str, list: Vec<FieldError>| {
+            list.into_iter()
+                .map(move |e| FieldError::new(format!("{kind} `{name}`.{}", e.field), e.message))
+                .collect::<Vec<_>>()
+        };
+        for env in &self.environments {
+            if let Err(e) = env.validate() {
+                errors.extend(prefixed("environment", &env.name, e));
+            }
+        }
+        for ep in &self.endpoints {
+            if let Err(e) = ep.validate() {
+                errors
+                    .extend(e.into_iter().map(|e| {
+                        FieldError::new(format!("endpoint `{}`", ep.name), e.to_string())
+                    }));
+            }
+        }
+        for (r, _) in &self.resources {
+            if let Err(e) = r.validate() {
+                errors.extend(prefixed("resource", &r.name, e));
+            }
+        }
+        for d in &self.datasets {
+            if let Err(e) = d.validate() {
+                errors.extend(prefixed("dataset", &d.name, e));
+            }
+        }
+        if errors.is_empty() {
+            Ok(())
+        } else {
+            Err(StorageError::invalid(ENTITY, errors))
+        }
     }
 }
