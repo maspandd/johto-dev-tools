@@ -8,7 +8,8 @@ mock HTTP server with validation, response rules, dynamic templates and
 request history.
 
 > **Status: early development.** The mock engine, CRUD simulation, data
-> generator, SQLite/PostgreSQL storage and the management API work today. The
+> generator, SQLite/PostgreSQL storage, the management API, OpenAPI and cURL
+> import, and portable project archives work today. The
 > visual editor and desktop app are on the [roadmap](#roadmap). The product spec is in
 > [docs/developer_workbench_product_spec.md](docs/developer_workbench_product_spec.md).
 
@@ -120,6 +121,10 @@ Data lives in `.workbench/` (SQLite database and the secret-encryption key) unle
 | Datasets | `GET POST /projects/{id}/datasets`, `POST /projects/{id}/datasets/preview`, `GET PATCH DELETE /datasets/{id}`, `GET /datasets/{id}/preview`, `GET /datasets/{id}/export?format=json\|csv` |
 | Mock servers | `GET POST /projects/{id}/mock-servers`, `GET /mock-servers`, `GET PATCH DELETE /mock-servers/{id}`, `GET /mock-servers/{id}/logs` |
 | Request logs | `GET DELETE /projects/{id}/request-logs` (filters: `method`, `status`, `endpoint_id`, `resource_id`, `server_id`, `since`, `until`, `limit`) |
+| Archives | `GET /projects/{id}/export?records=`, `POST /projects/import?workspace_id=&preview=&name=` (body: the `.zip`) |
+| OpenAPI | `POST /projects/{id}/openapi/import`, `GET /projects/{id}/openapi/export?format=yaml\|json`, `POST /openapi/validate` |
+| cURL | `POST /curl/parse` |
+| API description | `GET /openapi.json` (OpenAPI 3.1 for this API) |
 | Health | `GET /health` (no token needed) |
 
 `PATCH` takes a JSON merge patch. Collections accept `?page=&limit=`. Every
@@ -139,6 +144,36 @@ curl -X POST localhost:8080/api/v1/projects/<id>/endpoints -H 'content-type: app
 curl -X POST localhost:8080/api/v1/projects/<id>/mock-servers -H 'content-type: application/json' -d '{"port":4010}'
 curl localhost:4010/api/hello/sari          # {"hi":"sari"}
 ```
+
+## Import and export
+
+**OpenAPI 3.0, 3.1 and 3.2** (JSON or YAML). Import maps each operation to an
+endpoint: path, query and header parameters, JSON request schemas (3.0
+`nullable` and `$ref`s, including recursive ones, become JSON Schema), a mock
+response from the documented example or one generated from the schema
+(`format: uuid` becomes `{{ uuid }}`, `date-time` becomes `{{ now }}`), and bearer or
+header API-key auth. Send `"dry_run": true` to preview, and `"operations"` to
+import only some. Nothing is dropped silently: every skipped or approximated
+construct (cookie parameters, `HEAD`, multipart bodies, extra response codes,
+external `$ref`s, ...) is reported with a JSON pointer. Endpoints that clash
+with existing routes are imported disabled. Export writes OpenAPI 3.1 with
+endpoints and CRUD resources; response rules, delays and disabled state travel
+in an `x-workbench` extension, so a round trip keeps them.
+
+**cURL.** `POST /curl/parse` with `{ "command": "curl ..." }` returns the parsed
+request and an endpoint draft to edit and save. It handles bash, cmd and
+PowerShell line continuations, `-d/--data*`, `--json`, `-G`, `-u` and `-b`. The
+command is never run and `@file` arguments are never read. Authorization headers,
+`-u`, cookies and token-like query parameters or body fields come back as
+`[REDACTED]` unless `"keep_credentials": true`.
+
+**Project archives.** A `.zip` with one readable JSON file per environment,
+endpoint, resource and dataset, plus `manifest.json` and a generated
+`openapi/openapi.yaml`. Records are included with `?records=true`. Secret values
+are never exported; environments list secret names to fill in after import.
+Import validates entry names, caps sizes (including decompressed size), rejects
+newer formats, migrates older ones, checks every item, resets environments to
+loopback, and creates the new project in one transaction.
 
 ## Storage
 
@@ -169,8 +204,8 @@ crates/
   workbench-storage   SQLite / PostgreSQL repositories and migrations
   workbench-api       Management API (/api/v1) and `workbench-server`
   data-generator      Seeded synthetic data (en/id locales), JSON and CSV export
-  openapi-engine      (Phase 5) OpenAPI 3.x import/export
-  project-archive     (Phase 5) portable project archives
+  openapi-engine      OpenAPI 3.x import/export and cURL parsing (pure, no I/O)
+  project-archive     Portable .zip project archives with format migrations
 apps/
   web                 React + TypeScript + Vite + Tailwind (shell only for now)
   desktop             (Phase 7) Tauri 2 shell
@@ -206,8 +241,8 @@ WORKBENCH_TEST_POSTGRES_URL=postgres://postgres:workbench@127.0.0.1:5432/postgre
 | 2 | Storage and persistence (SQLite, PostgreSQL) | Done |
 | 3 | Data generator and CRUD simulation | Done |
 | 4 | Management API, environments, history API | Done |
-| 5 | OpenAPI, cURL import, project archives | Next |
-| 6 | Web UI (API Studio) | Planned |
+| 5 | OpenAPI, cURL import, project archives | Done |
+| 6 | Web UI (API Studio) | Next |
 | 7 | Desktop app and Docker self-hosting | Planned |
 
 ## Contributing and security
