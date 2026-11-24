@@ -51,7 +51,8 @@ impl LogQuery {
     }
 }
 
-/// Body (optional): `{ "environment_id"?, "host"?, "port"?, "allow_network_exposure"? }`.
+/// Body (optional): `{ "environment_id"?, "host"?, "port"?,
+/// "allow_network_exposure"?, "cors"?: { "enabled", "allowed_origins" } }`.
 pub async fn start(
     State(s): State<AppState>,
     ApiPath(project_id): ApiPath<ProjectId>,

@@ -13,7 +13,7 @@ use workbench_domain::Endpoint;
 use workbench_storage::EndpointRecord;
 
 use crate::extract::{ApiJson, ApiPath, ApiQuery};
-use crate::util::{PageQuery, apply_patch, data, paginate};
+use crate::util::{PageQuery, apply_patch, apply_replace, data, paginate};
 use crate::{ApiError, ApiResult, AppState};
 
 /// An endpoint with its project and ordering metadata.
@@ -99,6 +99,20 @@ pub async fn update(
 ) -> ApiResult<Json<Value>> {
     let current = s.store.get_endpoint(id).await?;
     let endpoint = apply_patch(&current.endpoint, &body, &["id"])?;
+    let record = s.store.update_endpoint(&endpoint).await?;
+    s.runtime.refresh_project(record.project_id).await;
+    Ok(Json(data(EndpointDto::from(record))))
+}
+
+/// Replaces the whole definition (body as for create). Use this rather
+/// than `PATCH` when bodies or schemas contain `null` values.
+pub async fn replace(
+    State(s): State<AppState>,
+    ApiPath(id): ApiPath<EndpointId>,
+    ApiJson(body): ApiJson<Value>,
+) -> ApiResult<Json<Value>> {
+    let current = s.store.get_endpoint(id).await?;
+    let endpoint = apply_replace(&current.endpoint, &body, &["id"])?;
     let record = s.store.update_endpoint(&endpoint).await?;
     s.runtime.refresh_project(record.project_id).await;
     Ok(Json(data(EndpointDto::from(record))))

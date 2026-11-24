@@ -87,6 +87,38 @@ pub fn apply_patch<T: Serialize + DeserializeOwned>(
         .map_err(|e| ApiError::validation(vec![ErrorDetail::new("body", e.to_string())]))
 }
 
+/// Replaces `current` with `body` (a full definition), keeping the keys in
+/// `fixed` (IDs, owners, timestamps). Unlike a merge patch, `null` values
+/// inside the body are stored as given, and missing fields take their
+/// defaults.
+pub fn apply_replace<T: Serialize + DeserializeOwned>(
+    current: &T,
+    body: &Value,
+    fixed: &[&str],
+) -> Result<T, ApiError> {
+    let Value::Object(fields) = body else {
+        return Err(ApiError::validation(vec![ErrorDetail::new(
+            "body",
+            "must be a JSON object",
+        )]));
+    };
+    let Value::Object(current) = serde_json::to_value(current).map_err(|_| ApiError::internal())?
+    else {
+        return Err(ApiError::internal());
+    };
+    let mut value: Map<String, Value> = current
+        .into_iter()
+        .filter(|(k, _)| fixed.contains(&k.as_str()))
+        .collect();
+    for (k, v) in fields {
+        if !fixed.contains(&k.as_str()) {
+            value.insert(k.clone(), v.clone());
+        }
+    }
+    serde_json::from_value(Value::Object(value))
+        .map_err(|e| ApiError::validation(vec![ErrorDetail::new("body", e.to_string())]))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -118,6 +150,31 @@ mod tests {
         );
         assert!(apply_patch(&t, &json!({ "name": 5 }), &[]).is_err());
         assert!(apply_patch(&t, &json!([1]), &[]).is_err());
+    }
+
+    #[test]
+    fn replace_keeps_fixed_fields_and_nulls() {
+        #[derive(Debug, Serialize, Deserialize, PartialEq)]
+        struct Doc {
+            id: u32,
+            body: Value,
+            #[serde(default)]
+            tags: Vec<String>,
+        }
+        let d = Doc {
+            id: 1,
+            body: json!({ "a": 1 }),
+            tags: vec!["x".into()],
+        };
+        let out = apply_replace(&d, &json!({ "id": 9, "body": { "b": null } }), &["id"]).unwrap();
+        assert_eq!(
+            out,
+            Doc {
+                id: 1,
+                body: json!({ "b": null }),
+                tags: vec![]
+            }
+        );
     }
 
     #[test]

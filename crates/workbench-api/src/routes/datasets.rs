@@ -12,7 +12,7 @@ use workbench_core::{DatasetId, ErrorDetail, ProjectId};
 use workbench_domain::{DataSchema, Dataset, Locale};
 
 use crate::extract::{ApiJson, ApiPath, ApiQuery};
-use crate::util::{PageQuery, apply_patch, data, paginate};
+use crate::util::{PageQuery, apply_patch, apply_replace, data, paginate};
 use crate::{ApiError, ApiResult, AppState};
 
 const FIXED: &[&str] = &["id", "project_id", "created_at", "updated_at"];
@@ -144,6 +144,20 @@ pub async fn update(
     Ok(Json(data(
         s.store
             .update_dataset(&apply_patch(&current, &body, FIXED)?)
+            .await?,
+    )))
+}
+
+/// Replaces the whole definition (body as for create).
+pub async fn replace(
+    State(s): State<AppState>,
+    ApiPath(id): ApiPath<DatasetId>,
+    ApiJson(body): ApiJson<Value>,
+) -> ApiResult<Json<Value>> {
+    let current = s.store.get_dataset(id).await?;
+    Ok(Json(data(
+        s.store
+            .update_dataset(&apply_replace(&current, &body, FIXED)?)
             .await?,
     )))
 }

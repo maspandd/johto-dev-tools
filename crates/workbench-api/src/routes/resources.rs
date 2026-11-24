@@ -12,7 +12,7 @@ use workbench_domain::Resource;
 use workbench_storage::ResourceRecord;
 
 use crate::extract::{ApiJson, ApiPath, ApiQuery};
-use crate::util::{PageQuery, apply_patch, data, paginate};
+use crate::util::{PageQuery, apply_patch, apply_replace, data, paginate};
 use crate::{ApiError, ApiResult, AppState};
 
 #[derive(Serialize)]
@@ -84,6 +84,19 @@ pub async fn update(
 ) -> ApiResult<Json<Value>> {
     let current = s.store.get_resource(id).await?;
     let resource = apply_patch(&current.resource, &body, &["id"])?;
+    let record = s.store.update_resource(&resource).await?;
+    s.runtime.refresh_project(record.project_id).await;
+    Ok(Json(data(ResourceDto::from(record))))
+}
+
+/// Replaces the whole definition (body as for create). Records are kept.
+pub async fn replace(
+    State(s): State<AppState>,
+    ApiPath(id): ApiPath<ResourceId>,
+    ApiJson(body): ApiJson<Value>,
+) -> ApiResult<Json<Value>> {
+    let current = s.store.get_resource(id).await?;
+    let resource = apply_replace(&current.resource, &body, &["id"])?;
     let record = s.store.update_resource(&resource).await?;
     s.runtime.refresh_project(record.project_id).await;
     Ok(Json(data(ResourceDto::from(record))))

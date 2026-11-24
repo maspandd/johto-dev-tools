@@ -9,7 +9,9 @@ use std::net::IpAddr;
 use std::sync::Arc;
 
 use chrono::{DateTime, Utc};
-use mock_runtime::{MockServerConfig, RecordFuture, RecordStore, RunningServer, ServerOptions};
+use mock_runtime::{
+    CorsConfig, MockServerConfig, RecordFuture, RecordStore, RunningServer, ServerOptions,
+};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use tokio::sync::{Mutex, mpsc};
@@ -41,6 +43,9 @@ pub struct StartRequest {
     pub host: Option<IpAddr>,
     pub port: Option<u16>,
     pub allow_network_exposure: Option<bool>,
+    /// Browser access. Default: pages on this machine (`localhost`,
+    /// `127.0.0.1`, `[::1]`) may call the server.
+    pub cors: Option<CorsConfig>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -56,6 +61,7 @@ pub struct MockServerInfo {
     pub endpoints: usize,
     pub resources: usize,
     pub started_at: DateTime<Utc>,
+    pub cors: CorsConfig,
     /// Set when applying the latest project changes failed; the server keeps
     /// running the previous definitions.
     pub last_reload_error: Option<String>,
@@ -88,6 +94,7 @@ impl Managed {
             endpoints: self.server.route_count(),
             resources: self.resources,
             started_at: self.server.started_at(),
+            cors: self.server.config().cors.clone(),
             last_reload_error: self.last_reload_error.clone(),
         }
     }
@@ -204,6 +211,7 @@ impl MockServers {
             base_path: project.base_path.clone(),
             default_headers,
             variables,
+            cors: req.cors.unwrap_or_default(),
             ..MockServerConfig::default()
         };
 

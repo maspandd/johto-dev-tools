@@ -71,6 +71,7 @@ pub(crate) fn api() -> Router<AppState> {
         .route(
             "/endpoints/{id}",
             get(endpoints::get)
+                .put(endpoints::replace)
                 .patch(endpoints::update)
                 .delete(endpoints::delete),
         )
@@ -84,6 +85,7 @@ pub(crate) fn api() -> Router<AppState> {
         .route(
             "/resources/{id}",
             get(resources::get)
+                .put(resources::replace)
                 .patch(resources::update)
                 .delete(resources::delete),
         )
@@ -100,6 +102,7 @@ pub(crate) fn api() -> Router<AppState> {
         .route(
             "/datasets/{id}",
             get(datasets::get)
+                .put(datasets::replace)
                 .patch(datasets::update)
                 .delete(datasets::delete),
         )

@@ -1273,3 +1273,47 @@ async fn management_api_describes_itself() {
     }
     assert!(checked >= 59, "{checked}");
 }
+
+#[tokio::test]
+async fn put_replaces_definitions_and_keeps_nulls() {
+    let app = app().await;
+    let project = app.project().await;
+    let ep = app
+        .post(
+            &format!("/api/v1/projects/{project}/endpoints"),
+            json!({ "name": "Item", "method": "GET", "path": "/item",
+                    "response": { "body": { "type": "json", "content": { "a": 1, "b": 2 } } } }),
+        )
+        .await;
+    let id = ep.body["data"]["id"].as_str().unwrap().to_owned();
+    let mut def = ep.body["data"].clone();
+    def["response"]["body"]["content"] = json!({ "deleted_at": null });
+    def["id"] = json!("ignored");
+    let put = app
+        .send(
+            Method::PUT,
+            &format!("/api/v1/endpoints/{id}"),
+            Some(def),
+            &[],
+        )
+        .await;
+    assert_eq!(put.status, StatusCode::OK, "{:?}", put.body);
+    assert_eq!(put.body["data"]["id"], id.as_str());
+    assert_eq!(
+        put.body["data"]["response"]["body"]["content"],
+        json!({ "deleted_at": null })
+    );
+    let bad = app
+        .send(
+            Method::PUT,
+            &format!("/api/v1/endpoints/{id}"),
+            Some(json!({ "name": "x" })),
+            &[],
+        )
+        .await;
+    assert_eq!(
+        bad.status,
+        StatusCode::UNPROCESSABLE_ENTITY,
+        "method and path are required"
+    );
+}
