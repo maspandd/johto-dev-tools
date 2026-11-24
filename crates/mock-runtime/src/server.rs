@@ -21,7 +21,7 @@ use tokio::task::JoinHandle;
 use workbench_core::{ErrorCode, ErrorEnvelope, MockServerId, ResourceId};
 use workbench_domain::{Endpoint, RecordChange, Resource};
 
-use crate::history::{HistoryRecord, HistorySink, Redactor};
+use crate::history::{HistoryListener, HistoryRecord, HistorySink, Redactor};
 use crate::{HistoryStore, MemoryRecordStore, MockServerConfig, RecordStore, StartError};
 
 /// How long `stop` waits for in-flight requests before aborting them.
@@ -91,6 +91,28 @@ fn engine_config(config: &MockServerConfig) -> EngineConfig {
     EngineConfig {
         base_path: config.base_path.clone(),
         default_headers: config.default_headers.clone(),
+        variables: config.variables.clone(),
+    }
+}
+
+/// Everything a server serves, besides its [`MockServerConfig`].
+pub struct ServerOptions {
+    pub endpoints: Vec<Endpoint>,
+    pub resources: Vec<Resource>,
+    /// Where resource records are loaded from and persisted to.
+    pub record_store: Arc<dyn RecordStore>,
+    /// Receives every captured request (for persistent history).
+    pub on_history: Option<HistoryListener>,
+}
+
+impl Default for ServerOptions {
+    fn default() -> Self {
+        Self {
+            endpoints: Vec::new(),
+            resources: Vec::new(),
+            record_store: Arc::new(MemoryRecordStore::new()),
+            on_history: None,
+        }
     }
 }
 
@@ -134,18 +156,50 @@ impl RunningServer {
         config: MockServerConfig,
         endpoints: &[Endpoint],
     ) -> Result<Self, StartError> {
-        Self::start_project(config, endpoints, &[], Arc::new(MemoryRecordStore::new())).await
+        Self::start_with(
+            config,
+            ServerOptions {
+                endpoints: endpoints.to_vec(),
+                ..ServerOptions::default()
+            },
+        )
+        .await
     }
 
-    /// Validates the configuration, compiles endpoints and resources, binds
-    /// the listener, loads or seeds resource data from `store`, and starts
-    /// serving. Seed data is persisted before the first request is accepted.
+    /// Starts a server with endpoints and resources backed by `store`.
     pub async fn start_project(
         config: MockServerConfig,
         endpoints: &[Endpoint],
         resources: &[Resource],
         store: Arc<dyn RecordStore>,
     ) -> Result<Self, StartError> {
+        Self::start_with(
+            config,
+            ServerOptions {
+                endpoints: endpoints.to_vec(),
+                resources: resources.to_vec(),
+                record_store: store,
+                on_history: None,
+            },
+        )
+        .await
+    }
+
+    /// Validates the configuration, compiles endpoints and resources, binds
+    /// the listener, loads or seeds resource data from the record store, and
+    /// starts serving. Seed data is persisted before the first request is
+    /// accepted.
+    pub async fn start_with(
+        config: MockServerConfig,
+        options: ServerOptions,
+    ) -> Result<Self, StartError> {
+        let ServerOptions {
+            endpoints,
+            resources,
+            record_store: store,
+            on_history,
+        } = options;
+        let (endpoints, resources) = (endpoints.as_slice(), resources.as_slice());
         let addr = config.bind.validate()?;
 
         let (writer_tx, writer_rx) = mpsc::unbounded_channel();
@@ -187,7 +241,7 @@ impl RunningServer {
             max_delay: config.max_delay(),
             history: config.history.enabled.then(|| {
                 (
-                    HistorySink::spawn(history.clone(), HISTORY_QUEUE),
+                    HistorySink::spawn(history.clone(), HISTORY_QUEUE, on_history),
                     Redactor::new(&config.history),
                 )
             }),

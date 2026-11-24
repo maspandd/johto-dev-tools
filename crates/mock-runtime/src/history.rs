@@ -110,6 +110,11 @@ impl HistoryStore {
     }
 }
 
+/// Called with every captured (already redacted) record, e.g. to persist it.
+/// Runs on the history writer task, never on the response path; it must
+/// not block (hand records to a channel instead).
+pub type HistoryListener = std::sync::Arc<dyn Fn(&HistoryRecord) + Send + Sync>;
+
 /// Sends records to the background writer without ever blocking.
 #[derive(Debug, Clone)]
 pub(crate) struct HistorySink {
@@ -118,12 +123,20 @@ pub(crate) struct HistorySink {
 }
 
 impl HistorySink {
-    /// Spawns the writer task and returns the sink feeding it.
-    pub(crate) fn spawn(store: HistoryStore, capacity: usize) -> Self {
+    /// Spawns the writer task and returns the sink feeding it. `listener`
+    /// sees every stored record, off the response path.
+    pub(crate) fn spawn(
+        store: HistoryStore,
+        capacity: usize,
+        listener: Option<HistoryListener>,
+    ) -> Self {
         let (tx, mut rx) = mpsc::channel::<HistoryRecord>(capacity.max(1));
         let writer = store.clone();
         tokio::spawn(async move {
             while let Some(record) = rx.recv().await {
+                if let Some(listener) = &listener {
+                    listener(&record);
+                }
                 writer.push(record);
             }
         });

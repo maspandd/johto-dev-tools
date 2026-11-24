@@ -22,9 +22,9 @@ mod server;
 
 pub use config::{HistoryConfig, MockServerConfig};
 pub use error::StartError;
-pub use history::{CapturedBody, HistoryFilter, HistoryRecord, HistoryStore};
+pub use history::{CapturedBody, HistoryFilter, HistoryListener, HistoryRecord, HistoryStore};
 pub use manager::{MockRuntimeManager, ServerStatus};
 pub use record_store::{
     JsonFileRecordStore, MemoryRecordStore, RecordFuture, RecordStore, RecordStoreError,
 };
-pub use server::RunningServer;
+pub use server::{RunningServer, ServerOptions};

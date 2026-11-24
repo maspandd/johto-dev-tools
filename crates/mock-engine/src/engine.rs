@@ -30,6 +30,8 @@ pub struct EngineConfig {
     /// Headers added to every response unless the response already sets them
     /// (project-level defaults, spec §4.1).
     pub default_headers: BTreeMap<String, String>,
+    /// Values for `{{ env.NAME }}` placeholders (non-secret environment variables).
+    pub variables: BTreeMap<String, String>,
 }
 
 /// The result of handling one request.
@@ -141,6 +143,7 @@ enum Target {
 pub struct Engine {
     base: Vec<String>,
     default_headers: Vec<(String, String)>,
+    variables: BTreeMap<String, String>,
     endpoints: Vec<CompiledEndpoint>,
     resources: Vec<CompiledResource>,
     targets: Vec<Target>,
@@ -437,6 +440,7 @@ impl Engine {
         }
         Ok(Self {
             base,
+            variables: config.variables.clone(),
             default_headers: config
                 .default_headers
                 .iter()
@@ -650,6 +654,7 @@ impl Engine {
             params,
             body: body.as_ref(),
             entropy: self.entropy.as_ref(),
+            variables: &self.variables,
         };
         let mut out = render(response, &ctx);
         out.matched_rule = rule.map(|r| r.name.clone());

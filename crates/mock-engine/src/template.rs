@@ -14,6 +14,7 @@
 //! | `uuid`                | fresh random UUID                            |
 //! | `now`                 | current time, RFC 3339                       |
 //! | `timestamp`           | current time, Unix milliseconds              |
+//! | `env.<name>`          | environment variable (non-secret)            |
 //!
 //! A JSON string that is exactly one placeholder is replaced by the typed
 //! value (so `"{{ body.age }}"` stays a number). Placeholders embedded in a
@@ -32,6 +33,7 @@ pub(crate) struct TemplateContext<'a> {
     pub params: &'a BTreeMap<String, String>,
     pub body: Option<&'a Value>,
     pub entropy: &'a dyn Entropy,
+    pub variables: &'a BTreeMap<String, String>,
 }
 
 enum Resolved {
@@ -72,6 +74,7 @@ impl TemplateContext<'_> {
             "path" => string(self.params.get(rest).map(String::as_str)),
             "query" => string(self.request.query_param(rest)),
             "header" | "headers" => string(self.request.header(rest)),
+            "env" => string(self.variables.get(rest).map(String::as_str)),
             "body" => {
                 let pointer = format!("/{}", rest.replace('.', "/"));
                 self.body
@@ -161,6 +164,7 @@ mod tests {
             params: &params,
             body: body.as_ref(),
             entropy: &Fixed,
+            variables: &BTreeMap::from([("REGION".to_owned(), "id-jkt".to_owned())]),
         };
         ctx.render_json(&value)
     }
@@ -191,9 +195,11 @@ mod tests {
     #[test]
     fn builtins() {
         let out = render(
-            json!({ "id": "{{uuid}}", "at": "{{ now }}", "ms": "{{timestamp}}", "m": "{{request.method}}" }),
+            json!({ "id": "{{uuid}}", "at": "{{ now }}", "ms": "{{timestamp}}", "m": "{{request.method}}", "region": "{{ env.REGION }}", "none": "{{ env.MISSING }}" }),
             None,
         );
+        assert_eq!(out["region"], "id-jkt");
+        assert_eq!(out["none"], Value::Null);
         assert_eq!(out["id"], "00000000-0000-4000-8000-000000000000");
         assert_eq!(out["at"], "2026-01-02T03:04:05+00:00");
         assert_eq!(out["ms"], json!(1_767_323_045_000_i64));
