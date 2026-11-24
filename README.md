@@ -9,13 +9,42 @@ request history.
 
 > **Status: early development.** The mock engine, CRUD simulation, data
 > generator, SQLite/PostgreSQL storage, the management API, OpenAPI and cURL
-> import, and portable project archives work today. The
+> import, portable project archives and the API Studio web UI work today. The
 > visual editor and desktop app are on the [roadmap](#roadmap). The product spec is in
 > [docs/developer_workbench_product_spec.md](docs/developer_workbench_product_spec.md).
 
 ## Quick start
 
 Requirements: Rust (stable, 1.88+). Node 24+ and pnpm are only needed for the web UI.
+
+### API Studio (web UI)
+
+```sh
+cargo run --bin workbench-server     # management API on 127.0.0.1:8080
+pnpm install
+pnpm dev:web                         # http://localhost:5173
+```
+
+Create a workspace, then **Create demo project** for a ready-made API, or start
+empty and import an OpenAPI document. Press **Start server** and use **Try it**
+next to any endpoint; every call shows up in the request history panel.
+
+| Area | What you can do |
+|---|---|
+| Endpoints | Search, drag to reorder, open several in tabs; edit method, path, response (status, headers, delay, JSON or text body in Monaco with `{{ }}` placeholders), response rules, query/header parameters, JSON Schema body validation and simulated auth. Changes autosave and apply to running servers at once |
+| Try it | Send real requests to the running mock server with path parameters, query, headers and body |
+| Request history | Live, filterable list with full request and response details, docked at the bottom |
+| CRUD resources | Fields and seed data (with completion and checks in the editor), body schema, paging, soft delete; browse live records; reset data |
+| Datasets | Preview generated records and export JSON or CSV |
+| Environments | Variables (`{{ env.NAME }}`), default headers, port, and write-only encrypted secrets |
+| Import / export | OpenAPI preview and selective import, cURL to endpoint, OpenAPI YAML/JSON and `.zip` archive downloads; archive import on the Dashboard |
+| General | Command palette (Ctrl/⌘ K), dark and light themes, keyboard shortcuts, layouts that work down to phone width |
+
+The dev server forwards `/api` to `127.0.0.1:8080` (override with
+`WORKBENCH_API`). When the API runs with `WORKBENCH_API_TOKEN`, enter the token
+under **Settings**; it is kept in that browser only.
+
+### Mock server from the command line
 
 ```sh
 cargo run --bin workbench-mock -- examples/demo-project.json
@@ -50,6 +79,7 @@ The server binds to `127.0.0.1` only. Binding to any other interface requires `-
 | Templates | `{{ path.id }}`, `{{ query.page }}`, `{{ header.x-tenant }}`, `{{ body.user.name }}`, `{{ uuid }}`, `{{ now }}`, `{{ timestamp }}`, `{{ request.id }}` |
 | Simulation | Status, headers, JSON or text body, delay (capped), bearer or API-key auth presence |
 | Runtime | Start, stop, hot reload; port-conflict errors; graceful shutdown; body-size limit; several isolated servers at once |
+| Browser access | CORS for pages on this machine (`localhost`, `127.0.0.1`, `[::1]`, any port) by default; more origins or `*` on request; can be turned off. Other sites are refused |
 | History | Captured off the response path; authorization headers and sensitive fields (`password`, `token`, …) redacted by default; retention limit; filters |
 
 Errors use one JSON envelope everywhere:
@@ -116,9 +146,9 @@ Data lives in `.workbench/` (SQLite database and the secret-encryption key) unle
 | Projects | `GET /projects?workspace_id=`, `POST /projects`, `GET PATCH DELETE /projects/{id}`, `POST /projects/{id}/duplicate` |
 | Environments | `GET POST /projects/{id}/environments`, `GET PATCH DELETE /environments/{id}` |
 | Secrets | `GET /environments/{id}/secrets` (names only), `PUT DELETE /environments/{id}/secrets/{name}` |
-| Endpoints | `GET POST /projects/{id}/endpoints`, `POST /projects/{id}/endpoints/reorder`, `GET PATCH DELETE /endpoints/{id}`, `POST /endpoints/{id}/duplicate\|enable\|disable` |
-| Resources | `GET POST /projects/{id}/resources`, `GET PATCH DELETE /resources/{id}`, `GET /resources/{id}/records`, `POST /resources/{id}/reset` |
-| Datasets | `GET POST /projects/{id}/datasets`, `POST /projects/{id}/datasets/preview`, `GET PATCH DELETE /datasets/{id}`, `GET /datasets/{id}/preview`, `GET /datasets/{id}/export?format=json\|csv` |
+| Endpoints | `GET POST /projects/{id}/endpoints`, `POST /projects/{id}/endpoints/reorder`, `GET PUT PATCH DELETE /endpoints/{id}`, `POST /endpoints/{id}/duplicate\|enable\|disable` |
+| Resources | `GET POST /projects/{id}/resources`, `GET PUT PATCH DELETE /resources/{id}`, `GET /resources/{id}/records`, `POST /resources/{id}/reset` |
+| Datasets | `GET POST /projects/{id}/datasets`, `POST /projects/{id}/datasets/preview`, `GET PUT PATCH DELETE /datasets/{id}`, `GET /datasets/{id}/preview`, `GET /datasets/{id}/export?format=json\|csv` |
 | Mock servers | `GET POST /projects/{id}/mock-servers`, `GET /mock-servers`, `GET PATCH DELETE /mock-servers/{id}`, `GET /mock-servers/{id}/logs` |
 | Request logs | `GET DELETE /projects/{id}/request-logs` (filters: `method`, `status`, `endpoint_id`, `resource_id`, `server_id`, `since`, `until`, `limit`) |
 | Archives | `GET /projects/{id}/export?records=`, `POST /projects/import?workspace_id=&preview=&name=` (body: the `.zip`) |
@@ -127,7 +157,10 @@ Data lives in `.workbench/` (SQLite database and the secret-encryption key) unle
 | API description | `GET /openapi.json` (OpenAPI 3.1 for this API) |
 | Health | `GET /health` (no token needed) |
 
-`PATCH` takes a JSON merge patch. Collections accept `?page=&limit=`. Every
+`PATCH` takes a JSON merge patch; `PUT` replaces a whole definition and keeps
+`null` values inside bodies and schemas (a merge patch would delete them).
+Starting a mock server accepts `port`, `environment_id`, `host`,
+`allow_network_exposure` and `cors: { enabled, allowed_origins }`. Collections accept `?page=&limit=`. Every
 response has an `x-request-id` header, and errors use the shared envelope.
 Endpoint and resource changes apply to running mock servers immediately; a
 change that fails to apply is reported in the server's `last_reload_error`
@@ -207,7 +240,7 @@ crates/
   openapi-engine      OpenAPI 3.x import/export and cURL parsing (pure, no I/O)
   project-archive     Portable .zip project archives with format migrations
 apps/
-  web                 React + TypeScript + Vite + Tailwind (shell only for now)
+  web                 API Studio: React, TypeScript, Vite, Tailwind, TanStack Query, Monaco
   desktop             (Phase 7) Tauri 2 shell
 ```
 
@@ -242,8 +275,8 @@ WORKBENCH_TEST_POSTGRES_URL=postgres://postgres:workbench@127.0.0.1:5432/postgre
 | 3 | Data generator and CRUD simulation | Done |
 | 4 | Management API, environments, history API | Done |
 | 5 | OpenAPI, cURL import, project archives | Done |
-| 6 | Web UI (API Studio) | Next |
-| 7 | Desktop app and Docker self-hosting | Planned |
+| 6 | Web UI (API Studio) | Done |
+| 7 | Desktop app and Docker self-hosting | Next |
 
 ## Contributing and security
 
