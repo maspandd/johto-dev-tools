@@ -1,7 +1,8 @@
 import { AlertTriangle, Info, Loader2, XCircle } from 'lucide-react'
 import type * as React from 'react'
+import { Link } from 'react-router'
 
-import { describeError } from '@/lib/api'
+import { ApiError, describeError } from '@/lib/api'
 import type { Issue, Method } from '@/lib/types'
 import { cn, statusTone } from '@/lib/utils'
 
@@ -88,6 +89,15 @@ export function ErrorNotice({ error, className }: { error: unknown; className?: 
         <XCircle className="mt-0.5 size-4 shrink-0" />
         <span>{title}</span>
       </div>
+      {error instanceof ApiError && error.status === 401 && (
+        <p className="mt-1.5 ml-6 text-xs">
+          This server requires an access token. Enter it under{' '}
+          <Link to="/settings" className="underline">
+            Settings
+          </Link>
+          .
+        </p>
+      )}
       {details.length > 0 && (
         <ul className="mt-1.5 ml-6 list-disc space-y-0.5 text-xs">
           {details.map((d, i) => (
