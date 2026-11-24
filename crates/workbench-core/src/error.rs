@@ -32,6 +32,28 @@ pub enum ErrorCode {
     RecordNotFound,
     /// A record with the same primary key already exists.
     RecordConflict,
+    /// The request is malformed, e.g. an invalid ID in the path.
+    BadRequest,
+    /// The request conflicts with current state (duplicate name, busy port, ...).
+    Conflict,
+    /// Management API: no such workspace.
+    WorkspaceNotFound,
+    /// Management API: no such project.
+    ProjectNotFound,
+    /// Management API: no such environment.
+    EnvironmentNotFound,
+    /// Management API: no such endpoint.
+    EndpointNotFound,
+    /// Management API: no such resource.
+    ResourceNotFound,
+    /// Management API: no such dataset.
+    DatasetNotFound,
+    /// Management API: no such running mock server.
+    MockServerNotFound,
+    /// Management API: no such environment secret.
+    SecretNotFound,
+    /// Management API: no route for this path.
+    NotFound,
     /// An unexpected internal failure.
     InternalError,
 }
@@ -48,7 +70,17 @@ impl ErrorCode {
             Self::PayloadTooLarge => 413,
             Self::Unauthorized => 401,
             Self::RecordNotFound => 404,
-            Self::RecordConflict => 409,
+            Self::RecordConflict | Self::Conflict => 409,
+            Self::BadRequest => 400,
+            Self::WorkspaceNotFound
+            | Self::ProjectNotFound
+            | Self::EnvironmentNotFound
+            | Self::EndpointNotFound
+            | Self::ResourceNotFound
+            | Self::DatasetNotFound
+            | Self::MockServerNotFound
+            | Self::SecretNotFound
+            | Self::NotFound => 404,
             Self::InternalError => 500,
         }
     }
