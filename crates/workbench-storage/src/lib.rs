@@ -19,10 +19,12 @@ mod error;
 mod projects;
 mod request_logs;
 mod resources;
+mod secrets;
 mod store;
 mod workspaces;
 
 pub use endpoints::EndpointRecord;
 pub use error::{StorageError, StorageResult};
 pub use resources::ResourceRecord;
+pub use secrets::{EncryptedSecret, SecretMeta};
 pub use store::{Backend, Store};

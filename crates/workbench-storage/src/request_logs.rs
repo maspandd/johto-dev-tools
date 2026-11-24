@@ -91,8 +91,8 @@ impl Store {
         });
         with_pool!(self, |pool| sqlx::query(
             "INSERT INTO request_logs (id, project_id, server_id, endpoint_id, timestamp, method, \
-             path, status, duration_ms, matched_rule, details) \
-             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)"
+             path, status, duration_ms, matched_rule, details, resource_id) \
+             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)"
         )
         .bind(*r.id.as_uuid())
         .bind(*project_id.as_uuid())
@@ -105,6 +105,7 @@ impl Store {
         .bind(i64::try_from(r.duration_ms).unwrap_or(i64::MAX))
         .bind(r.matched_rule.as_deref())
         .bind(&details)
+        .bind(r.matched_resource.map(|x| *x.as_uuid()))
         .execute(pool)
         .await
         .map_err(|e| map_constraint(
@@ -131,6 +132,8 @@ impl Store {
              AND ($4 IS NULL OR endpoint_id = $4) \
              AND ($5 IS NULL OR timestamp >= $5) \
              AND ($6 IS NULL OR timestamp <= $6) \
+             AND ($8 IS NULL OR resource_id = $8) \
+             AND ($9 IS NULL OR server_id = $9) \
              ORDER BY timestamp DESC, id DESC LIMIT $7"
         )
         .bind(*project_id.as_uuid())
@@ -140,6 +143,8 @@ impl Store {
         .bind(filter.since.map(time::truncate))
         .bind(filter.until.map(time::truncate))
         .bind(filter.limit.map_or(i64::MAX, clamp_i64))
+        .bind(filter.resource.map(|x| *x.as_uuid()))
+        .bind(filter.server.map(|s| *s.as_uuid()))
         .fetch_all(pool)
         .await?);
         rows.into_iter().map(HistoryRecord::try_from).collect()
