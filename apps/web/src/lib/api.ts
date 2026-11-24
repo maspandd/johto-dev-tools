@@ -56,7 +56,25 @@ export interface Connection {
   token: string
 }
 
+/** Set by the desktop app, which runs the API in-process. */
+interface DesktopConnection {
+  baseUrl: string
+  token: string
+  desktop: true
+}
+
+declare global {
+  interface Window {
+    __WORKBENCH__?: DesktopConnection
+  }
+}
+
+/** The desktop app's connection; settings cannot change it. */
+export const desktopConnection: DesktopConnection | undefined =
+  typeof window === 'undefined' ? undefined : window.__WORKBENCH__
+
 export function loadConnection(): Connection {
+  if (desktopConnection) return { baseUrl: desktopConnection.baseUrl, token: desktopConnection.token }
   try {
     const raw = localStorage.getItem(SETTINGS_KEY)
     if (raw) {

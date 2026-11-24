@@ -3,11 +3,15 @@
   "private": true,
   "license": "Apache-2.0",
   "packageManager": "pnpm@11.8.0",
-  "engines": { "node": ">=24" },
+  "engines": {
+    "node": ">=24"
+  },
   "scripts": {
     "dev:web": "pnpm --filter @workbench/web dev",
     "build:web": "pnpm --filter @workbench/web build",
     "lint": "pnpm -r lint",
-    "typecheck": "pnpm -r typecheck"
+    "typecheck": "pnpm -r typecheck",
+    "dev:desktop": "pnpm --filter @workbench/desktop dev",
+    "build:desktop": "pnpm --filter @workbench/desktop build"
   }
 }

@@ -5,7 +5,7 @@ import { useState } from 'react'
 import { Button } from '@/components/ui/button'
 import { Field, Input, Select } from '@/components/ui/form'
 import { Kbd, Spinner } from '@/components/ui/misc'
-import { api, loadConnection, saveConnection } from '@/lib/api'
+import { api, desktopConnection, loadConnection, saveConnection } from '@/lib/api'
 import { type ThemeChoice, useTheme } from '@/lib/theme'
 import { modKey } from '@/lib/utils'
 
@@ -31,56 +31,64 @@ export function SettingsPage() {
           <h2 id="conn-title" className="text-sm font-semibold">
             Workbench API
           </h2>
-          <form
-            className="flex flex-col gap-3"
-            onSubmit={async (e) => {
-              e.preventDefault()
-              saveConnection(conn)
-              setCheck('checking')
-              const ok = await api.health()
-              setCheck(ok ? 'ok' : 'failed')
-              await qc.invalidateQueries()
-            }}
-          >
-            <Field label="API address" hint="Empty uses this page's server (the dev server forwards /api to 127.0.0.1:8080).">
-              {(id) => (
-                <Input
-                  id={id}
-                  placeholder="http://127.0.0.1:8080"
-                  value={conn.baseUrl}
-                  onChange={(e) => setConn({ ...conn, baseUrl: e.target.value })}
-                />
-              )}
-            </Field>
-            <Field
-              label="Access token"
-              hint="Only needed when the server runs with WORKBENCH_API_TOKEN. Stored in this browser."
+          {desktopConnection ? (
+            <p className="text-sm text-muted-foreground">
+              The desktop app runs the API itself at{' '}
+              <code className="font-mono text-xs">{desktopConnection.baseUrl}</code> with a private token that changes
+              on every launch. Data is stored on this computer.
+            </p>
+          ) : (
+            <form
+              className="flex flex-col gap-3"
+              onSubmit={async (e) => {
+                e.preventDefault()
+                saveConnection(conn)
+                setCheck('checking')
+                const ok = await api.health()
+                setCheck(ok ? 'ok' : 'failed')
+                await qc.invalidateQueries()
+              }}
             >
-              {(id) => (
-                <Input
-                  id={id}
-                  type="password"
-                  autoComplete="off"
-                  value={conn.token}
-                  onChange={(e) => setConn({ ...conn, token: e.target.value })}
-                />
-              )}
-            </Field>
-            <div className="flex items-center gap-3">
-              <Button type="submit">Save and test</Button>
-              {check === 'checking' && <Spinner />}
-              {check === 'ok' && (
-                <span className="flex items-center gap-1 text-sm text-success">
-                  <CheckCircle2 className="size-4" /> Connected
-                </span>
-              )}
-              {check === 'failed' && (
-                <span className="flex items-center gap-1 text-sm text-destructive">
-                  <XCircle className="size-4" /> Not reachable
-                </span>
-              )}
-            </div>
-          </form>
+              <Field label="API address" hint="Empty uses this page's server (the dev server forwards /api to 127.0.0.1:8080).">
+                {(id) => (
+                  <Input
+                    id={id}
+                    placeholder="http://127.0.0.1:8080"
+                    value={conn.baseUrl}
+                    onChange={(e) => setConn({ ...conn, baseUrl: e.target.value })}
+                  />
+                )}
+              </Field>
+              <Field
+                label="Access token"
+                hint="Only needed when the server runs with WORKBENCH_API_TOKEN. Stored in this browser."
+              >
+                {(id) => (
+                  <Input
+                    id={id}
+                    type="password"
+                    autoComplete="off"
+                    value={conn.token}
+                    onChange={(e) => setConn({ ...conn, token: e.target.value })}
+                  />
+                )}
+              </Field>
+              <div className="flex items-center gap-3">
+                <Button type="submit">Save and test</Button>
+                {check === 'checking' && <Spinner />}
+                {check === 'ok' && (
+                  <span className="flex items-center gap-1 text-sm text-success">
+                    <CheckCircle2 className="size-4" /> Connected
+                  </span>
+                )}
+                {check === 'failed' && (
+                  <span className="flex items-center gap-1 text-sm text-destructive">
+                    <XCircle className="size-4" /> Not reachable
+                  </span>
+                )}
+              </div>
+            </form>
+          )}
         </section>
 
         <section aria-labelledby="look-title" className="flex flex-col gap-3 rounded-lg border p-4">

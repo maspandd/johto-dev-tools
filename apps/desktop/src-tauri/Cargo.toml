@@ -1,0 +1,42 @@
+[package]
+name = "workbench-desktop"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.90"
+license = "Apache-2.0"
+repository = "https://github.com/maspandd/johto-dev-tools"
+description = "Developer Workbench desktop app (Tauri 2)"
+publish = false
+
+# Built on its own: Tauri needs system WebView libraries that the main
+# workspace's CI and Docker builds do not have.
+[workspace]
+
+[lib]
+name = "workbench_desktop"
+crate-type = ["rlib"]
+
+[build-dependencies]
+tauri-build = { version = "=2.7.4", features = [] }
+
+[dependencies]
+axum = "0.8.9"
+getrandom = "0.4.3"
+serde_json = "1.0.154"
+tauri = { version = "=2.12.5", features = [] }
+tokio = { version = "1.54.1", features = ["net", "rt-multi-thread", "sync"] }
+tracing = "0.1.44"
+tracing-subscriber = { version = "0.3.23", features = ["env-filter"] }
+workbench-api = { path = "../../../crates/workbench-api" }
+workbench-storage = { path = "../../../crates/workbench-storage" }
+
+[lints.rust]
+unsafe_code = "forbid"
+
+[lints.clippy]
+all = { level = "warn", priority = -1 }
+
+[profile.release]
+codegen-units = 1
+lto = true
+strip = true
